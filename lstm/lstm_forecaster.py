@@ -166,31 +166,181 @@ class ModelEvaluator:
                 print(f"  Correlation: {target_metrics['correlation']:.6f}")
 
 
+class TemporalBlock(nn.Module):
+    """Temporal Convolutional Block with dilated convolutions for capturing long-range dependencies"""
+    def __init__(self, n_inputs, n_outputs, kernel_size, dilation, dropout=0.2):
+        super(TemporalBlock, self).__init__()
+        padding = (kernel_size - 1) * dilation
+        self.conv1 = nn.Conv1d(n_inputs, n_outputs, kernel_size, padding=padding, dilation=dilation)
+        self.conv2 = nn.Conv1d(n_outputs, n_outputs, kernel_size, padding=padding, dilation=dilation)
+        self.dropout = nn.Dropout(dropout)
+        self.relu = nn.ReLU()
+        self.downsample = nn.Conv1d(n_inputs, n_outputs, 1) if n_inputs != n_outputs else None
+        self.init_weights()
+    
+    def init_weights(self):
+        self.conv1.weight.data.normal_(0, 0.01)
+        self.conv2.weight.data.normal_(0, 0.01)
+        if self.downsample is not None:
+            self.downsample.weight.data.normal_(0, 0.01)
+    
+    def forward(self, x):
+        out = self.conv1(x)
+        out = out[:, :, :x.size(2)]  # Causal padding
+        out = self.relu(out)
+        out = self.dropout(out)
+        out = self.conv2(out)
+        out = out[:, :, :x.size(2)]  # Causal padding
+        out = self.relu(out)
+        out = self.dropout(out)
+        res = x if self.downsample is None else self.downsample(x)
+        return self.relu(out + res)
+
+
+class MultiHeadAttention(nn.Module):
+    """Multi-head attention mechanism for capturing important temporal features"""
+    def __init__(self, d_model, num_heads=4, dropout=0.1):
+        super(MultiHeadAttention, self).__init__()
+        assert d_model % num_heads == 0
+        self.d_k = d_model // num_heads
+        self.num_heads = num_heads
+        self.query = nn.Linear(d_model, d_model)
+        self.key = nn.Linear(d_model, d_model)
+        self.value = nn.Linear(d_model, d_model)
+        self.fc = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(d_model)
+    
+    def forward(self, x):
+        batch_size, seq_len, d_model = x.size()
+        residual = x
+        
+        # Linear projections in batch from d_model => h x d_k 
+        Q = self.query(x).view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
+        K = self.key(x).view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
+        V = self.value(x).view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
+        
+        # Scaled dot-product attention
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / np.sqrt(self.d_k)
+        attn = torch.softmax(scores, dim=-1)
+        attn = self.dropout(attn)
+        
+        # Apply attention to values
+        context = torch.matmul(attn, V)
+        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
+        
+        # Final linear projection
+        output = self.fc(context)
+        output = self.dropout(output)
+        
+        # Add residual connection and layer norm
+        return self.layer_norm(output + residual)
+
+
 class MultiHorizonLSTM(nn.Module):
-    """LSTM model with residual connections for multi-horizon forecasting"""
-    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.2):
+    """
+    Enhanced LSTM with:
+    - Multi-head attention for weak signal detection
+    - Temporal Convolutional blocks for long-range dependencies
+    - Residual connections throughout
+    - Layer normalization for training stability
+    
+    Based on state-of-the-art architectures for financial time series
+    """
+    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.2, 
+                 use_attention=True, use_tcn=True, num_heads=4):
         super(MultiHorizonLSTM, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
-            batch_first=True, dropout=dropout if num_layers > 1 else 0)
+        self.use_attention = use_attention
+        self.use_tcn = use_tcn
+        
+        # Input projection to match hidden size
+        self.input_proj = nn.Linear(input_size, hidden_size)
+        
+        # Temporal Convolutional Network blocks (optional)
+        if use_tcn:
+            self.tcn_blocks = nn.ModuleList([
+                TemporalBlock(hidden_size, hidden_size, kernel_size=3, dilation=2**i, dropout=dropout)
+                for i in range(2)  # 2 TCN blocks with increasing dilation
+            ])
+        
+        # Bidirectional LSTM for better context understanding
+        self.lstm = nn.LSTM(
+            hidden_size, 
+            hidden_size // 2,  # Bidirectional doubles the output size
+            num_layers,
+            batch_first=True, 
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=True
+        )
+        
+        # Multi-head attention layer (optional)
+        if use_attention:
+            self.attention = MultiHeadAttention(hidden_size, num_heads=num_heads, dropout=dropout)
+        
+        # Layer normalization
+        self.layer_norm1 = nn.LayerNorm(hidden_size)
+        self.layer_norm2 = nn.LayerNorm(hidden_size)
+        
+        # Enhanced feed-forward network with more capacity
         self.dropout = nn.Dropout(dropout)
-        self.fc1 = nn.Linear(hidden_size, hidden_size // 2)
-        self.fc2 = nn.Linear(hidden_size // 2, hidden_size // 2)
-        self.fc3 = nn.Linear(hidden_size // 2, output_size)
-    
+        self.fc1 = nn.Linear(hidden_size, hidden_size * 2)
+        self.fc2 = nn.Linear(hidden_size * 2, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, hidden_size // 2)
+        self.fc4 = nn.Linear(hidden_size // 2, output_size)
+        
+        # GELU activation (better than ReLU for gradients)
+        self.gelu = nn.GELU()
+        
     def forward(self, x):
-        # LSTM forward pass
+        batch_size, seq_len, _ = x.size()
+        
+        # Input projection
+        x = self.input_proj(x)
+        x = self.gelu(x)
+        
+        # TCN blocks (if enabled) - captures long-range dependencies
+        if self.use_tcn:
+            # TCN expects (batch, channels, seq_len)
+            x_tcn = x.transpose(1, 2)
+            for tcn_block in self.tcn_blocks:
+                x_tcn = tcn_block(x_tcn)
+            x = x_tcn.transpose(1, 2) + x  # Residual connection
+            x = self.layer_norm1(x)
+        
+        # Bidirectional LSTM
         lstm_out, _ = self.lstm(x)
-        # Take last output
-        last_output = lstm_out[:, -1, :]
-        # Fully connected layers
-        out = torch.relu(self.fc1(last_output))
+        
+        # Multi-head attention (if enabled) - captures weak signals
+        if self.use_attention:
+            attn_out = self.attention(lstm_out)
+            lstm_out = lstm_out + attn_out  # Residual connection
+        
+        lstm_out = self.layer_norm2(lstm_out)
+        
+        # Take last output (or use attention pooling)
+        if self.use_attention:
+            # Attention-weighted pooling over sequence
+            attn_weights = torch.softmax(
+                torch.bmm(lstm_out, lstm_out[:, -1, :].unsqueeze(2)).squeeze(2),
+                dim=1
+            )
+            last_output = torch.bmm(attn_weights.unsqueeze(1), lstm_out).squeeze(1)
+        else:
+            last_output = lstm_out[:, -1, :]
+        
+        # Enhanced feed-forward network with residuals
+        out = self.gelu(self.fc1(last_output))
         out = self.dropout(out)
-        residual = out
-        out = torch.relu(self.fc2(out))
-        out = out + residual  # Residual connection
-        out = self.fc3(out)
+        out = self.gelu(self.fc2(out))
+        out = self.dropout(out)
+        out = out + last_output  # Residual connection
+        
+        out = self.gelu(self.fc3(out))
+        out = self.dropout(out)
+        out = self.fc4(out)
+        
         return out
 
 
@@ -223,12 +373,21 @@ class MultiHorizonTimeSeriesDataset(Dataset):
 
 
 class MultiHorizonForecaster:
-    """Main forecaster class for multi-horizon LSTM predictions"""
-    def __init__(self, sequence_length=20, horizons=[1, 5, 10], hidden_size=64, num_layers=2):
+    """
+    Enhanced Multi-Horizon Forecaster with state-of-the-art components:
+    - Attention mechanisms for weak signal detection
+    - Temporal Convolutional Networks for long-range dependencies
+    - Advanced optimization strategies
+    """
+    def __init__(self, sequence_length=20, horizons=[1, 5, 10], hidden_size=64, num_layers=2,
+                 use_attention=True, use_tcn=True, num_heads=4):
         self.sequence_length = sequence_length
         self.horizons = horizons
         self.hidden_size = hidden_size
         self.num_layers = num_layers
+        self.use_attention = use_attention
+        self.use_tcn = use_tcn
+        self.num_heads = num_heads
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Scalers
@@ -237,6 +396,11 @@ class MultiHorizonForecaster:
         
         # Models for each horizon
         self.models = {}
+        
+        print(f"Initialized Enhanced Forecaster:")
+        print(f"  - Attention: {use_attention} {'(' + str(num_heads) + ' heads)' if use_attention else ''}")
+        print(f"  - TCN: {use_tcn}")
+        print(f"  - Device: {self.device}")
 
     def prepare_data(self, X, Y, test_size=0.1):
         """Scale and split data into train and test sets"""
@@ -277,29 +441,39 @@ class MultiHorizonForecaster:
         return train_dataset, test_dataset
 
     def train_horizon_model(self, train_loader, val_loader, horizon, epochs, lr):
-        """Train model for specific horizon"""
+        """Train enhanced model with advanced optimization for specific horizon"""
         sample_batch = next(iter(train_loader))
         input_size = sample_batch[0].shape[2]
         output_size = sample_batch[1].shape[1]
         print(f"Model architecture: Input={input_size}, Hidden={self.hidden_size}, Output={output_size}")
         
-        model = MultiHorizonLSTM(input_size, self.hidden_size, self.num_layers, output_size)
+        # Initialize enhanced model with attention and TCN
+        model = MultiHorizonLSTM(
+            input_size, self.hidden_size, self.num_layers, output_size,
+            use_attention=self.use_attention, use_tcn=self.use_tcn, 
+            num_heads=self.num_heads
+        )
         model.to(self.device)
         
-        criterion = nn.MSELoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr, weight_decay=1e-5)
-        scheduler = torch.optim.lr_scheduler.LinearLR(
-            optimizer,
-            start_factor=1.0,  # Start at full LR
-            end_factor=0.1,    # End at 10% of initial LR
-            total_iters=epochs  # Over total epochs
+        # Huber loss is more robust to outliers than MSE (better for market data)
+        criterion = nn.SmoothL1Loss()  # Also called Huber loss
+        
+        # AdamW optimizer with better weight decay handling
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+        
+        # Cosine annealing with warm restarts (state-of-the-art for time series)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, 
+            T_0=10,  # Initial restart period
+            T_mult=2,  # Multiply period after each restart
+            eta_min=lr * 0.01  # Minimum learning rate
         )
         
         best_val_loss = float('inf')
         patience_counter = 0
         best_model_state = None  # Store in memory instead
         
-        print(f"Total epochs {epochs}")
+        print(f"Total epochs {epochs} with Cosine Annealing + Warm Restarts")
         for epoch in range(epochs):
             # Training
             model.train()
@@ -335,16 +509,17 @@ class MultiHorizonForecaster:
                 best_model_state = model.state_dict().copy()  # Save to memory
             else:
                 patience_counter += 1
-                if patience_counter >= 30:
+                if patience_counter >= 40:  # Increased patience for better convergence
                     print(f"Early stopping at epoch {epoch}")
                     break
             
             if epoch % 10 == 0:
-                print(f'Horizon {horizon}, Epoch {epoch}: Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}')
+                print(f'Horizon {horizon}, Epoch {epoch}: Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}, LR: {optimizer.param_groups[0]["lr"]:.6f}')
         
         # Load best model state from memory
         if best_model_state is not None:
             model.load_state_dict(best_model_state)
+            print(f"Loaded best model with validation loss: {best_val_loss:.6f}")
         
         return model
     
@@ -412,7 +587,19 @@ def clean_and_align_data(X_df, Y_df):
 
 
 def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test):
-    """Main function to run the forecasting pipeline"""
+    """
+    Main function to run the enhanced forecasting pipeline with state-of-the-art architecture
+    
+    Args:
+        X_full: Full feature dataframe
+        Y_full: Full target dataframe
+        pred_start: Index where testing begins
+        target_list: List of target column names
+        X_to_test: Test features
+    
+    Returns:
+        DataFrame with predictions and actual values
+    """
     # Prepare training data
     X_df = pd.DataFrame(X_full.iloc[:pred_start, :])  # all continuous features
     Y_df = pd.DataFrame(Y_full.iloc[:pred_start, :])
@@ -424,24 +611,27 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test):
     print(f"Data Overview:")
     print(f" X shape: {X_aligned.shape}, Y shape: {Y_aligned.shape}")
     
-    # Initialize forecaster
+    # Initialize enhanced forecaster with attention and TCN
     sequence_length = 30
     forecaster = MultiHorizonForecaster(
         sequence_length=sequence_length,
         horizons=[1],
-        hidden_size=32,
-        num_layers=2
+        hidden_size=64,  # Increased for better capacity
+        num_layers=2,
+        use_attention=True,  # Enable multi-head attention for weak signals
+        use_tcn=True,  # Enable temporal convolutional network
+        num_heads=4  # 4-head attention
     )
     
-    # Train models
+    # Train models with enhanced optimization
     test_ratio = 0.05
-    print(f"\nTraining models..., test ratio {test_ratio}")
+    print(f"\nTraining enhanced model with attention + TCN, test ratio {test_ratio}")
     forecaster.fit(
         X_aligned.values,
         Y_aligned.values,
         batch_size=64,
         epochs=300,
-        lr=5e-3,
+        lr=2e-3,  # Slightly lower LR for more stable training with attention
         test_size=test_ratio
     )
     
@@ -480,9 +670,34 @@ if __name__ == "__main__":
     except:
         config = {}
     
-    print("Multi-Horizon LSTM Forecaster loaded successfully!")
+    print("="*80)
+    print("ENHANCED LSTM FORECASTER - State-of-the-Art Architecture")
+    print("="*80)
+    print("\nKey Improvements:")
+    print("  ✓ Multi-Head Attention: Captures weak signals in market data")
+    print("  ✓ Temporal Convolutional Network: Long-range dependency modeling")
+    print("  ✓ Bidirectional LSTM: Better context understanding")
+    print("  ✓ Huber Loss: More robust to outliers")
+    print("  ✓ AdamW Optimizer: Better weight decay handling")
+    print("  ✓ Cosine Annealing: Improved learning rate scheduling")
+    print("  ✓ Attention Pooling: Better sequence aggregation")
+    print("\nBased on recent research:")
+    print("  - Multi-head attention for time series (Vaswani et al.)")
+    print("  - Temporal Convolutional Networks (Bai et al.)")
+    print("  - Robust loss functions for financial data")
+    print("="*80)
     print("\nTo use the model:")
     print("1. Import: from lstm_forecaster import MultiHorizonForecaster, ModelEvaluator, run_forecasting")
     print("2. Prepare your data: X (features) and Y (targets)")
     print("3. Call run_forecasting() or use the forecaster directly")
-    print("\nSee README_LSTM_FORECASTER.md for detailed usage instructions.")
+    print("\nExample usage:")
+    print("  forecaster = MultiHorizonForecaster(")
+    print("      sequence_length=30,")
+    print("      horizons=[1, 5, 10],")
+    print("      hidden_size=64,")
+    print("      use_attention=True,  # Enable for weak signal detection")
+    print("      use_tcn=True,  # Enable for long-range dependencies")
+    print("      num_heads=4")
+    print("  )")
+    print("\nFor baseline comparison, set use_attention=False and use_tcn=False")
+    print("\nSee ENHANCED_MODEL_DOCUMENTATION.md for detailed information.")
