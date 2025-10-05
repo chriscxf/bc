@@ -419,13 +419,41 @@ class MultiHorizonTimeSeriesDataset(Dataset):
         return len(self.X) - self.sequence_length - self.horizon + 1
     
     def __getitem__(self, idx):
-        # Input sequence: X[idx:idx+seq_len] + Y[idx:idx+seq_len-1]
-        x_seq = self.X[idx:idx + self.sequence_length]
-        y_seq = self.Y[idx:idx + self.sequence_length - 1]  # Y[:-1] for input
-        # Combine X and lagged Y as features
-        input_seq = torch.cat([x_seq[1:], y_seq], dim=1)  # Align dimensions
-        # Target: Y at horizon h
+        """
+        Creates input-target pairs: Use X[1...t] + Y[1...t-1] to predict Y[t]
+        
+        Example with sequence_length=10, horizon=1, idx=0:
+          X input: X[idx:idx+seq_len]     = X[0:10]   → represents X[1...10]
+          Y input: Y[idx:idx+seq_len-1]   = Y[0:9]    → represents Y[1...9]
+          Target:  Y[idx+seq_len+h-1]     = Y[0+10+1-1] = Y[10]
+        
+        Timeline visualization (0-indexed in code, but conceptually 1-indexed):
+        Time:    1   2   3   4   5   6   7   8   9   10
+        X used:  X1  X2  X3  X4  X5  X6  X7  X8  X9  X10  ✓ (all up to current)
+        Y used:  Y1  Y2  Y3  Y4  Y5  Y6  Y7  Y8  Y9       (historical only, not Y10)
+        Predict:                                     Y10  (current target)
+        
+        For horizon > 1, predicts further ahead.
+        """
+        # Get X sequence: all X values from time 1 to t
+        x_seq = self.X[idx:idx + self.sequence_length]  # Shape: [seq_len, n_features_X]
+        
+        # Get Y sequence: all Y values from time 1 to t-1 (excluding current)
+        y_seq = self.Y[idx:idx + self.sequence_length - 1]  # Shape: [seq_len-1, n_features_Y]
+        
+        # Pad y_seq to match x_seq length by adding zeros at the end
+        # This represents "Y at time t is unknown" for same-day prediction
+        y_pad = torch.zeros((1, y_seq.shape[1]))  # One timestep of zeros
+        y_seq_padded = torch.cat([y_seq, y_pad], dim=0)  # Shape: [seq_len, n_features_Y]
+        
+        # Combine X[1...t] and Y[1...t-1,0] as features
+        input_seq = torch.cat([x_seq, y_seq_padded], dim=1)  # Shape: [seq_len, n_features_X + n_features_Y]
+        
+        # Target: Y at time t+horizon-1
+        # horizon=1: predict Y[t] (same-day)
+        # horizon=5: predict Y[t+4] (5 days ahead)
         target = self.Y[idx + self.sequence_length + self.horizon - 1]
+        
         return input_seq, target
 
 
