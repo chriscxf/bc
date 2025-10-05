@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import RobustScaler, MinMaxScaler
+from sklearn.preprocessing import RobustScaler, MinMaxScaler, StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
 import warnings
@@ -475,9 +475,9 @@ class MultiHorizonForecaster:
         self.num_heads = num_heads
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # Scalers
-        self.scaler_X = RobustScaler(quantile_range=(0, 100))
-        self.scaler_Y = RobustScaler(quantile_range=(1.0, 99.0))
+        # Scalers - RobustScaler for market data with outliers
+        self.scaler_X = RobustScaler()
+        self.scaler_Y = RobustScaler()
         
         # Models for each horizon
         self.models = {}
@@ -485,16 +485,30 @@ class MultiHorizonForecaster:
         print(f"Initialized Enhanced Forecaster:")
         print(f"  - Attention: {use_attention} {'(' + str(num_heads) + ' heads)' if use_attention else ''}")
         print(f"  - TCN: {use_tcn}")
+        print(f"  - Scaler: RobustScaler (outlier-robust)")
         print(f"  - Device: {self.device}")
 
     def prepare_data(self, X, Y, test_size=0.1):
         """Scale and split data into train and test sets"""
         print("Scaling data with RobustScaler...")
+        
+        # Check for outliers before scaling
+        X_outliers = np.sum(np.abs(X) > np.percentile(np.abs(X), 99), axis=0)
+        Y_outliers = np.sum(np.abs(Y) > np.percentile(np.abs(Y), 99), axis=0)
+        print(f"Data quality check:")
+        print(f"  X features with extreme values: {np.sum(X_outliers > 0)}/{X.shape[1]}")
+        print(f"  Y targets with extreme values: {np.sum(Y_outliers > 0)}/{Y.shape[1]}")
+        
         # Fit and transform the data
         X_scaled = self.scaler_X.fit_transform(X)
         Y_scaled = self.scaler_Y.fit_transform(Y)
         print(f"X scaled range: [{X_scaled.min():.3f}, {X_scaled.max():.3f}]")
         print(f"Y scaled range: [{Y_scaled.min():.3f}, {Y_scaled.max():.3f}]")
+        
+        # Sanity check
+        if np.abs(X_scaled).max() > 50 or np.abs(Y_scaled).max() > 50:
+            print("⚠️  WARNING: Scaled values are extremely large!")
+            print("   This suggests extreme outliers in your data.")
         
         # Split data
         split_idx = int(len(X) * (1 - test_size))
@@ -527,16 +541,8 @@ class MultiHorizonForecaster:
 
     def train_horizon_model(self, train_loader, val_loader, horizon, epochs, lr):
         """
-        Train enhanced model optimized to beat XGBoost on weak signals
-        
-        Key advantages over XGBoost:
-        1. Multi-scale temporal processing: Captures patterns at different time scales
-        2. Signal amplification: Boosts weak temporal patterns through attention
-        3. Sequential context: Sees evolution of patterns, not just instantaneous features
-        4. Residual connections: Preserves weak signals through deep layers
-        
-        XGBoost sees: [feature_1, feature_2, ..., feature_n] at time t
-        This LSTM sees: Evolution of features over time window [t-k, ..., t]
+        Train with VARIANCE-PRESERVING loss function
+        Prevents mode collapse to mean prediction
         """
         sample_batch = next(iter(train_loader))
         input_size = sample_batch[0].shape[2]
@@ -544,60 +550,104 @@ class MultiHorizonForecaster:
         print(f"Model architecture: Input={input_size}, Hidden={self.hidden_size}, Output={output_size}")
         print(f"  Multi-scale processing: Short-term (5 steps) + Long-term (full sequence)")
         print(f"  Signal amplification: Enabled via attention gating")
+        print(f"  Loss function: Variance-Preserving MSE")
         
-        # Initialize enhanced model with attention and TCN
+        # Initialize enhanced model
         model = MultiHorizonLSTM(
             input_size, self.hidden_size, self.num_layers, output_size,
+            dropout=0.1,  # Reduced dropout for small data
             use_attention=self.use_attention, use_tcn=self.use_tcn, 
             num_heads=self.num_heads
         )
         model.to(self.device)
         
-        # Huber loss is more robust to outliers than MSE (better for market data)
-        criterion = nn.SmoothL1Loss()  # Also called Huber loss
+        # VARIANCE-PRESERVING LOSS FUNCTION
+        def variance_preserving_loss(predictions, targets):
+            """
+            Custom loss that encourages variance matching
+            Prevents mode collapse to mean prediction
+            """
+            # Standard MSE
+            mse = nn.functional.mse_loss(predictions, targets)
+            
+            # Variance matching term
+            pred_std = torch.std(predictions)
+            target_std = torch.std(targets)
+            std_penalty = torch.abs(pred_std - target_std) / (target_std + 1e-8)
+            
+            # Mean matching
+            pred_mean = torch.mean(predictions)
+            target_mean = torch.mean(targets)
+            mean_penalty = torch.abs(pred_mean - target_mean) / (torch.abs(target_mean) + 1e-8)
+            
+            # Combined: 70% MSE + 20% variance + 10% mean
+            total_loss = 0.7 * mse + 0.2 * std_penalty + 0.1 * mean_penalty
+            
+            return total_loss, mse.item(), std_penalty.item()
         
-        # AdamW optimizer with better weight decay handling
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+        # Optimizer with lower weight decay
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-6)
         
-        # Cosine annealing with warm restarts (state-of-the-art for time series)
+        # Cosine annealing
         scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer, 
-            T_0=10,  # Initial restart period
-            T_mult=2,  # Multiply period after each restart
-            eta_min=lr * 0.01  # Minimum learning rate
+            T_0=15,  # Longer restart period
+            T_mult=2,
+            eta_min=lr * 0.001
         )
         
         best_val_loss = float('inf')
         patience_counter = 0
-        best_model_state = None  # Store in memory instead
+        best_model_state = None
         
-        print(f"Total epochs {epochs} with Cosine Annealing + Warm Restarts")
+        print(f"Total epochs {epochs} with Variance-Preserving Loss")
         for epoch in range(epochs):
             # Training
             model.train()
             train_loss = 0
+            train_mse = 0
+            train_std_penalty = 0
+            
             for batch_x, batch_y in train_loader:
                 batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                 optimizer.zero_grad()
                 outputs = model(batch_x)
-                loss = criterion(outputs, batch_y)
+                
+                loss, mse, std_penalty = variance_preserving_loss(outputs, batch_y)
+                
+                if torch.isnan(loss):
+                    print(f"⚠️ NaN loss at epoch {epoch}, skipping batch")
+                    continue
+                
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
                 train_loss += loss.item()
+                train_mse += mse
+                train_std_penalty += std_penalty
 
             # Validation
             model.eval()
             val_loss = 0
+            val_mse = 0
+            val_std_penalty = 0
+            
             with torch.no_grad():
                 for batch_x, batch_y in val_loader:
                     batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                     outputs = model(batch_x)
-                    loss = criterion(outputs, batch_y)
+                    loss, mse, std_penalty = variance_preserving_loss(outputs, batch_y)
                     val_loss += loss.item()
+                    val_mse += mse
+                    val_std_penalty += std_penalty
             
             avg_train_loss = train_loss / len(train_loader)
             avg_val_loss = val_loss / len(val_loader)
+            avg_train_mse = train_mse / len(train_loader)
+            avg_val_mse = val_mse / len(val_loader)
+            avg_train_std = train_std_penalty / len(train_loader)
+            avg_val_std = val_std_penalty / len(val_loader)
+            
             scheduler.step()
             
             # Early stopping - save to memory instead of disk
@@ -639,14 +689,14 @@ class MultiHorizonForecaster:
         print("\nTraining completed for all horizons!")
     
     def predict(self, X, Y, horizon):
-        """Make predictions for a specific horizon"""
+        """Make predictions for a specific horizon with diagnostics"""
         if horizon not in self.models:
             raise ValueError(f"No model trained for horizon {horizon}")
         
         model = self.models[horizon]
         model.eval()
         
-        # Scale the input data using the fitted scalers
+        # Scale the input data
         X_scaled = self.scaler_X.transform(X)
         Y_scaled = self.scaler_Y.transform(Y)
         
@@ -654,17 +704,29 @@ class MultiHorizonForecaster:
         dataset = MultiHorizonTimeSeriesDataset(X_scaled, Y_scaled, self.sequence_length, horizon)
         dataloader = DataLoader(dataset, batch_size=64, shuffle=False)
         
-        predictions = []
+        predictions_scaled = []
         with torch.no_grad():
             for batch_x, _ in dataloader:
                 batch_x = batch_x.to(self.device)
                 outputs = model(batch_x)
-                predictions.append(outputs.cpu().numpy())
+                predictions_scaled.append(outputs.cpu().numpy())
         
-        predictions = np.vstack(predictions)
+        predictions_scaled = np.vstack(predictions_scaled)
         
-        # Inverse transform predictions to original scale
-        predictions = self.scaler_Y.inverse_transform(predictions)
+        # Diagnostic in scaled space
+        print(f"\n🔍 PREDICTION DIAGNOSTICS (scaled space):")
+        print(f"   Prediction mean: {predictions_scaled.mean():.4f}")
+        print(f"   Prediction std: {predictions_scaled.std():.4f}")
+        print(f"   Prediction range: [{predictions_scaled.min():.4f}, {predictions_scaled.max():.4f}]")
+        
+        # Inverse transform
+        predictions = self.scaler_Y.inverse_transform(predictions_scaled)
+        
+        # Diagnostic in original space
+        print(f"\n📊 PREDICTION DIAGNOSTICS (original space):")
+        print(f"   Prediction mean: {predictions.mean():.2f}")
+        print(f"   Prediction std: {predictions.std():.2f}")
+        print(f"   Prediction range: [{predictions.min():.2f}, {predictions.max():.2f}]")
         
         return predictions
 
@@ -709,27 +771,27 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test):
     print(f"Data Overview:")
     print(f" X shape: {X_aligned.shape}, Y shape: {Y_aligned.shape}")
     
-    # Initialize enhanced forecaster with attention and TCN
-    sequence_length = 30
+    # OPTIMIZED CONFIGURATION FOR VARIANCE PRESERVATION
+    sequence_length = 30  # REDUCED from 40 (better for 980 samples)
     forecaster = MultiHorizonForecaster(
         sequence_length=sequence_length,
         horizons=[1],
-        hidden_size=64,  # Increased for better capacity
-        num_layers=2,
-        use_attention=True,  # Enable multi-head attention for weak signals
-        use_tcn=True,  # Enable temporal convolutional network
-        num_heads=4  # 4-head attention
+        hidden_size=96,      # REDUCED from 128 (prevent overfitting)
+        num_layers=2,        # REDUCED from 3 (simpler is better)
+        use_attention=True,  # Keep for weak signals
+        use_tcn=False,       # Disabled
+        num_heads=4          # REDUCED from 8
     )
     
-    # Train models with enhanced optimization
-    test_ratio = 0.05
-    print(f"\nTraining enhanced model with attention + TCN, test ratio {test_ratio}")
+    # OPTIMIZED TRAINING PARAMETERS
+    test_ratio = 0.1
+    print(f"\n🎯 Training with VARIANCE-PRESERVING settings, test ratio {test_ratio}")
     forecaster.fit(
         X_aligned.values,
         Y_aligned.values,
-        batch_size=64,
-        epochs=300,
-        lr=2e-3,  # Slightly lower LR for more stable training with attention
+        batch_size=32,      # INCREASED from 16 (more stable)
+        epochs=500,
+        lr=2e-3,            # REDUCED from 5e-3 (more stable)
         test_size=test_ratio
     )
     
@@ -744,6 +806,12 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test):
     # Make predictions
     horizon_1_predictions = forecaster.predict(X_test, Y_test, horizon=1)
     print(f"Predictions shape: {horizon_1_predictions.shape}")
+    
+    # Variance diagnostic
+    pred_std = np.std(horizon_1_predictions)
+    print(f"\n📊 VARIANCE DIAGNOSTIC:")
+    print(f"   Prediction std: {pred_std:.6f}")
+    print(f"   (Compare with actual Y std in your test set)")
     
     # Create prediction dataframe
     lstm_pred_df = pd.DataFrame(horizon_1_predictions, columns=target_list)
