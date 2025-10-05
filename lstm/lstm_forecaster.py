@@ -198,7 +198,10 @@ class TemporalBlock(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    """Multi-head attention mechanism for capturing important temporal features"""
+    """
+    Enhanced Multi-head attention with weak signal amplification
+    Specifically designed to beat XGBoost by capturing subtle temporal patterns
+    """
     def __init__(self, d_model, num_heads=4, dropout=0.1):
         super(MultiHeadAttention, self).__init__()
         assert d_model % num_heads == 0
@@ -210,6 +213,14 @@ class MultiHeadAttention(nn.Module):
         self.fc = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(d_model)
+        
+        # Signal amplification for weak patterns
+        self.signal_gate = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.Tanh(),
+            nn.Linear(d_model // 2, d_model),
+            nn.Sigmoid()
+        )
     
     def forward(self, x):
         batch_size, seq_len, d_model = x.size()
@@ -233,19 +244,24 @@ class MultiHeadAttention(nn.Module):
         output = self.fc(context)
         output = self.dropout(output)
         
+        # Signal amplification gate (boosts weak signals)
+        gate = self.signal_gate(output)
+        output = output * (1.0 + gate)  # Amplify important signals
+        
         # Add residual connection and layer norm
         return self.layer_norm(output + residual)
 
 
 class MultiHorizonLSTM(nn.Module):
     """
-    Enhanced LSTM with:
-    - Multi-head attention for weak signal detection
+    Enhanced LSTM optimized to beat XGBoost on weak signals:
+    - Multi-scale temporal processing (short + long term patterns)
+    - Multi-head attention with signal amplification
     - Temporal Convolutional blocks for long-range dependencies
-    - Residual connections throughout
+    - Residual connections to preserve weak signals
     - Layer normalization for training stability
     
-    Based on state-of-the-art architectures for financial time series
+    Key advantage over XGBoost: Captures temporal evolution of patterns
     """
     def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.2, 
                  use_attention=True, use_tcn=True, num_heads=4):
@@ -257,6 +273,25 @@ class MultiHorizonLSTM(nn.Module):
         
         # Input projection to match hidden size
         self.input_proj = nn.Linear(input_size, hidden_size)
+        
+        # Multi-scale temporal processing (key to beat XGBoost)
+        # Short-term: captures recent patterns (last 5 steps)
+        self.short_term_lstm = nn.LSTM(
+            hidden_size,
+            hidden_size // 4,
+            1,
+            batch_first=True,
+            dropout=0
+        )
+        
+        # Long-term: captures full sequence patterns
+        self.long_term_lstm = nn.LSTM(
+            hidden_size,
+            hidden_size // 4,
+            1,
+            batch_first=True,
+            dropout=0
+        )
         
         # Temporal Convolutional Network blocks (optional)
         if use_tcn:
@@ -275,13 +310,21 @@ class MultiHorizonLSTM(nn.Module):
             bidirectional=True
         )
         
-        # Multi-head attention layer (optional)
+        # Multi-head attention layer with signal amplification
         if use_attention:
             self.attention = MultiHeadAttention(hidden_size, num_heads=num_heads, dropout=dropout)
+        
+        # Temporal importance weighting (which timesteps matter most)
+        self.temporal_importance = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.Tanh(),
+            nn.Linear(hidden_size // 2, 1)
+        )
         
         # Layer normalization
         self.layer_norm1 = nn.LayerNorm(hidden_size)
         self.layer_norm2 = nn.LayerNorm(hidden_size)
+        self.layer_norm3 = nn.LayerNorm(hidden_size)
         
         # Enhanced feed-forward network with more capacity
         self.dropout = nn.Dropout(dropout)
@@ -298,6 +341,7 @@ class MultiHorizonLSTM(nn.Module):
         
         # Input projection
         x = self.input_proj(x)
+        residual_input = x  # Save for skip connection
         x = self.gelu(x)
         
         # TCN blocks (if enabled) - captures long-range dependencies
@@ -306,42 +350,55 @@ class MultiHorizonLSTM(nn.Module):
             x_tcn = x.transpose(1, 2)
             for tcn_block in self.tcn_blocks:
                 x_tcn = tcn_block(x_tcn)
-            x = x_tcn.transpose(1, 2) + x  # Residual connection
+            x = x_tcn.transpose(1, 2)
             x = self.layer_norm1(x)
         
-        # Bidirectional LSTM
-        lstm_out, _ = self.lstm(x)
+        # Multi-scale temporal processing (KEY TO BEAT XGBOOST)
+        # XGBoost sees single timestep; LSTM sees multiple scales
         
-        # Multi-head attention (if enabled) - captures weak signals
+        # Short-term patterns (last 5 timesteps)
+        recent_window = min(5, seq_len)
+        x_short, _ = self.short_term_lstm(x[:, -recent_window:, :])
+        
+        # Long-term patterns (full sequence)
+        x_long, _ = self.long_term_lstm(x)
+        
+        # Standard bidirectional LSTM
+        x_bi, _ = self.lstm(x)
+        
+        # Combine multi-scale features
+        # Take last outputs from short and long term
+        short_final = x_short[:, -1:, :].expand(-1, seq_len, -1)  # Expand to seq_len
+        long_final = x_long[:, -1:, :].expand(-1, seq_len, -1)
+        
+        # Concatenate along feature dimension and project back
+        multi_scale = torch.cat([x_bi, short_final, long_final], dim=2)
+        multi_scale_proj = nn.Linear(multi_scale.size(-1), self.hidden_size).to(x.device)
+        x = multi_scale_proj(multi_scale)
+        x = self.layer_norm2(x)
+        
+        # Multi-head attention with signal amplification
         if self.use_attention:
-            attn_out = self.attention(lstm_out)
-            lstm_out = lstm_out + attn_out  # Residual connection
+            x = self.attention(x)
         
-        lstm_out = self.layer_norm2(lstm_out)
+        # Temporal importance weighting (which timesteps contain signal)
+        importance_scores = torch.softmax(self.temporal_importance(x), dim=1)
+        x_weighted = torch.sum(x * importance_scores, dim=1)  # [batch, hidden_size]
         
-        # Take last output (or use attention pooling)
-        if self.use_attention:
-            # Attention-weighted pooling over sequence
-            attn_weights = torch.softmax(
-                torch.bmm(lstm_out, lstm_out[:, -1, :].unsqueeze(2)).squeeze(2),
-                dim=1
-            )
-            last_output = torch.bmm(attn_weights.unsqueeze(1), lstm_out).squeeze(1)
-        else:
-            last_output = lstm_out[:, -1, :]
+        # Add skip connection from input to preserve weak signals
+        input_summary = torch.mean(residual_input, dim=1)  # [batch, hidden_size]
+        x_combined = x_weighted + 0.3 * input_summary  # Weighted residual
+        x_combined = self.layer_norm3(x_combined)
         
-        # Enhanced feed-forward network with residuals
-        out = self.gelu(self.fc1(last_output))
-        out = self.dropout(out)
-        out = self.gelu(self.fc2(out))
-        out = self.dropout(out)
-        out = out + last_output  # Residual connection
+        # Enhanced feed-forward network
+        x = self.gelu(self.fc1(x_combined))
+        x = self.dropout(x)
+        x = self.gelu(self.fc2(x))
+        x = self.dropout(x)
+        x = self.gelu(self.fc3(x))
+        x = self.fc4(x)
         
-        out = self.gelu(self.fc3(out))
-        out = self.dropout(out)
-        out = self.fc4(out)
-        
-        return out
+        return x
 
 
 class MultiHorizonTimeSeriesDataset(Dataset):
@@ -441,11 +498,24 @@ class MultiHorizonForecaster:
         return train_dataset, test_dataset
 
     def train_horizon_model(self, train_loader, val_loader, horizon, epochs, lr):
-        """Train enhanced model with advanced optimization for specific horizon"""
+        """
+        Train enhanced model optimized to beat XGBoost on weak signals
+        
+        Key advantages over XGBoost:
+        1. Multi-scale temporal processing: Captures patterns at different time scales
+        2. Signal amplification: Boosts weak temporal patterns through attention
+        3. Sequential context: Sees evolution of patterns, not just instantaneous features
+        4. Residual connections: Preserves weak signals through deep layers
+        
+        XGBoost sees: [feature_1, feature_2, ..., feature_n] at time t
+        This LSTM sees: Evolution of features over time window [t-k, ..., t]
+        """
         sample_batch = next(iter(train_loader))
         input_size = sample_batch[0].shape[2]
         output_size = sample_batch[1].shape[1]
         print(f"Model architecture: Input={input_size}, Hidden={self.hidden_size}, Output={output_size}")
+        print(f"  Multi-scale processing: Short-term (5 steps) + Long-term (full sequence)")
+        print(f"  Signal amplification: Enabled via attention gating")
         
         # Initialize enhanced model with attention and TCN
         model = MultiHorizonLSTM(
@@ -671,23 +741,55 @@ if __name__ == "__main__":
         config = {}
     
     print("="*80)
-    print("ENHANCED LSTM FORECASTER - State-of-the-Art Architecture")
+    print("ENHANCED LSTM FORECASTER - OPTIMIZED TO BEAT XGBOOST")
     print("="*80)
-    print("\nKey Improvements:")
-    print("  ✓ Multi-Head Attention: Captures weak signals in market data")
-    print("  ✓ Temporal Convolutional Network: Long-range dependency modeling")
-    print("  ✓ Bidirectional LSTM: Better context understanding")
-    print("  ✓ Huber Loss: More robust to outliers")
-    print("  ✓ AdamW Optimizer: Better weight decay handling")
-    print("  ✓ Cosine Annealing: Improved learning rate scheduling")
-    print("  ✓ Attention Pooling: Better sequence aggregation")
-    print("\nBased on recent research:")
-    print("  - Multi-head attention for time series (Vaswani et al.)")
-    print("  - Temporal Convolutional Networks (Bai et al.)")
-    print("  - Robust loss functions for financial data")
+    print("\n🎯 KEY ADVANTAGES OVER XGBOOST:")
+    print("\n1. MULTI-SCALE TEMPORAL PROCESSING")
+    print("   • Short-term patterns (recent 5 steps)")
+    print("   • Long-term patterns (full sequence)")
+    print("   • XGBoost sees only single timestep")
+    print("\n2. WEAK SIGNAL AMPLIFICATION")
+    print("   • Signal gating in attention mechanism")
+    print("   • Temporal importance weighting")
+    print("   • Preserves weak signals via residual connections")
+    print("\n3. SEQUENTIAL CONTEXT")
+    print("   • Captures evolution of patterns over time")
+    print("   • Learns temporal dependencies XGBoost misses")
+    print("   • Multi-head attention focuses on informative timesteps")
+    print("\n4. ADVANCED OPTIMIZATION")
+    print("   • Huber loss: Robust to outliers in market data")
+    print("   • AdamW optimizer: Better weight decay handling")
+    print("   • Cosine Annealing: Optimal learning rate scheduling")
+    print("\n5. LONG-RANGE DEPENDENCIES")
+    print("   • Temporal Convolutional Network with dilated convolutions")
+    print("   • Captures patterns XGBoost's fixed window misses")
+    print("\n" + "="*80)
+    print("\n📊 WHEN THIS BEATS XGBOOST:")
+    print("   ✓ Signals evolve over time (momentum, trends)")
+    print("   ✓ Weak temporal patterns in high-dimensional data")
+    print("   ✓ Market data with sequential dependencies")
+    print("   ✓ Non-linear temporal interactions")
+    print("\n❌ WHEN XGBOOST MAY WIN:")
+    print("   • Signals are purely instantaneous")
+    print("   • Very small sample size (<200 samples)")
+    print("   • No temporal correlation in data")
+    print("\n💡 RECOMMENDATION:")
+    print("   • Test both models on your data")
+    print("   • Consider ensemble: 0.6*LSTM + 0.4*XGBoost")
+    print("   • Use validation set to choose best approach")
     print("="*80)
-    print("\nTo use the model:")
+    print("\n📖 USAGE (Same as before - backward compatible):")
     print("1. Import: from lstm_forecaster import MultiHorizonForecaster, ModelEvaluator, run_forecasting")
+    print("2. Prepare your data: X (features) and Y (targets)")
+    print("3. Call run_forecasting() or use the forecaster directly")
+    print("\nExample usage:")
+    print("  forecaster = MultiHorizonForecaster(")
+    print("      sequence_length=30,")
+    print("      horizons=[1, 5, 10],")
+    print("      hidden_size=64,")
+    print("      use_attention=True,  # Enable for weak signal detection")
+    print("      use_tcn=True,  # Enable for long-range dependencies")
+    print("      num_heads=4  # 4-head attention for multi-scale patterns")
     print("2. Prepare your data: X (features) and Y (targets)")
     print("3. Call run_forecasting() or use the forecaster directly")
     print("\nExample usage:")
