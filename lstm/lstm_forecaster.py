@@ -254,14 +254,8 @@ class MultiHeadAttention(nn.Module):
 
 class MultiHorizonLSTM(nn.Module):
     """
-    Enhanced LSTM optimized to beat XGBoost on weak signals:
-    - Multi-scale temporal processing (short + long term patterns)
-    - Multi-head attention with signal amplification
-    - Temporal Convolutional blocks for long-range dependencies
-    - Residual connections to preserve weak signals
-    - Layer normalization for training stability
-    
-    Key advantage over XGBoost: Captures temporal evolution of patterns
+    Simplified LSTM with strong focus on local (recent) inputs
+    Key fix: Uses last timestep directly instead of averaging across all timesteps
     """
     def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.2, 
                  use_attention=True, use_tcn=True, num_heads=4):
@@ -269,161 +263,41 @@ class MultiHorizonLSTM(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.use_attention = use_attention
-        self.use_tcn = use_tcn
         
-        # Input projection to match hidden size
-        self.input_proj = nn.Linear(input_size, hidden_size)
-        
-        # ⚡ Positional encoding to distinguish timestep importance
-        self.use_positional_encoding = True
-        if self.use_positional_encoding:
-            self.positional_encoding = nn.Parameter(torch.randn(1, 100, hidden_size) * 0.02)
-        
-        # Multi-scale temporal processing (key to beat XGBoost)
-        # Short-term: captures recent patterns (last 5 steps)
-        self.short_term_lstm = nn.LSTM(
-            hidden_size,
-            hidden_size // 4,
-            1,
-            batch_first=True,
-            dropout=0
-        )
-        
-        # Long-term: captures full sequence patterns
-        self.long_term_lstm = nn.LSTM(
-            hidden_size,
-            hidden_size // 4,
-            1,
-            batch_first=True,
-            dropout=0
-        )
-        
-        # Temporal Convolutional Network blocks (optional)
-        if use_tcn:
-            self.tcn_blocks = nn.ModuleList([
-                TemporalBlock(hidden_size, hidden_size, kernel_size=3, dilation=2**i, dropout=dropout)
-                for i in range(2)  # 2 TCN blocks with increasing dilation
-            ])
-        
-        # Bidirectional LSTM for better context understanding
+        # Simple LSTM - just process the sequence
         self.lstm = nn.LSTM(
-            hidden_size, 
-            hidden_size // 2,  # Bidirectional doubles the output size
+            input_size, 
+            hidden_size,
             num_layers,
             batch_first=True, 
             dropout=dropout if num_layers > 1 else 0,
-            bidirectional=True
+            bidirectional=False  # Simpler unidirectional
         )
         
-        # Multi-head attention layer with signal amplification
-        if use_attention:
-            self.attention = MultiHeadAttention(hidden_size, num_heads=num_heads, dropout=dropout)
-        
-        # Temporal importance weighting (which timesteps matter most)
-        self.temporal_importance = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.Tanh(),
-            nn.Linear(hidden_size // 2, 1)
-        )
-        
-        # Multi-scale projection layer (MUST be initialized in __init__, not forward!)
-        multi_scale_size = hidden_size + hidden_size // 4 + hidden_size // 4
-        self.multi_scale_proj = nn.Linear(multi_scale_size, hidden_size)
-        
-        # Layer normalization
-        self.layer_norm1 = nn.LayerNorm(hidden_size)
-        self.layer_norm2 = nn.LayerNorm(hidden_size)
-        self.layer_norm3 = nn.LayerNorm(hidden_size)
-        
-        # Enhanced feed-forward network with more capacity
+        # Output layers - directly from last LSTM output
         self.dropout = nn.Dropout(dropout)
-        self.fc1 = nn.Linear(hidden_size, hidden_size * 2)
-        self.fc2 = nn.Linear(hidden_size * 2, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, hidden_size // 2)
-        self.fc4 = nn.Linear(hidden_size // 2, output_size)
-        
-        # GELU activation (better than ReLU for gradients)
-        self.gelu = nn.GELU()
+        self.fc1 = nn.Linear(hidden_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, output_size)
+        self.relu = nn.ReLU()
         
     def forward(self, x):
+        """
+        KEY CHANGE: Use ONLY the last timestep output
+        This makes the model highly sensitive to recent inputs
+        """
         batch_size, seq_len, _ = x.size()
         
-        # Input projection
-        x = self.input_proj(x)
-        residual_input = x  # Save for skip connection
-        x = self.gelu(x)
+        # LSTM processes full sequence
+        lstm_out, (h_n, c_n) = self.lstm(x)  # lstm_out: [batch, seq_len, hidden]
         
-        # ⚡ Add positional encoding (helps distinguish recent vs old timesteps)
-        if self.use_positional_encoding and seq_len <= 100:
-            x = x + self.positional_encoding[:, :seq_len, :]
+        # ⚡ KEY FIX: Take ONLY the last timestep
+        # This is the most recent information - model will be sensitive to it
+        x_last = lstm_out[:, -1, :]  # [batch, hidden_size]
         
-        # TCN blocks (if enabled) - captures long-range dependencies
-        if self.use_tcn:
-            # TCN expects (batch, channels, seq_len)
-            x_tcn = x.transpose(1, 2)
-            for tcn_block in self.tcn_blocks:
-                x_tcn = tcn_block(x_tcn)
-            x = x_tcn.transpose(1, 2)
-            x = self.layer_norm1(x)
-        
-        # Multi-scale temporal processing (KEY TO BEAT XGBOOST)
-        # XGBoost sees single timestep; LSTM sees multiple scales
-        
-        # Short-term patterns (last 5 timesteps)
-        recent_window = min(5, seq_len)
-        x_short_full, _ = self.short_term_lstm(x[:, -recent_window:, :])
-        
-        # Long-term patterns (full sequence)
-        x_long_full, _ = self.long_term_lstm(x)
-        
-        # Standard bidirectional LSTM
-        x_bi, _ = self.lstm(x)
-        
-        # ⚡ KEY FIX: Use FULL sequences, not just final outputs
-        # Pad short-term output to match sequence length
-        if recent_window < seq_len:
-            padding = torch.zeros(batch_size, seq_len - recent_window, x_short_full.size(-1)).to(x.device)
-            x_short = torch.cat([padding, x_short_full], dim=1)
-        else:
-            x_short = x_short_full
-        
-        # Concatenate along feature dimension and project back
-        multi_scale = torch.cat([x_bi, x_short, x_long_full], dim=2)
-        x = self.multi_scale_proj(multi_scale)
-        x = self.layer_norm2(x)
-        
-        # Multi-head attention with signal amplification
-        if self.use_attention:
-            x = self.attention(x)
-        
-        # ⚡ KEY FIX: Focus on RECENT timesteps, not average of all
-        # Use weighted sum with exponential decay favoring recent steps
-        importance_scores = self.temporal_importance(x)  # [batch, seq_len, 1]
-        
-        # Add recency bias: more recent = more important
-        recency_weight = torch.linspace(0.5, 1.5, seq_len).to(x.device).view(1, -1, 1)
-        importance_scores = importance_scores * recency_weight
-        
-        # Softmax to get attention weights
-        importance_weights = torch.softmax(importance_scores, dim=1)
-        x_weighted = torch.sum(x * importance_weights, dim=1)  # [batch, hidden_size]
-        
-        # ⚡ KEY FIX: Add strong focus on LAST timestep (most recent)
-        x_last = x[:, -1, :]  # Last timestep
-        x_combined = 0.6 * x_last + 0.4 * x_weighted  # 60% recent, 40% weighted history
-        
-        # Skip connection from recent input (not average)
-        input_last = residual_input[:, -1, :]  # Last timestep of input
-        x_combined = x_combined + 0.2 * input_last  # Add direct input signal
-        x_combined = self.layer_norm3(x_combined)
-        
-        # Enhanced feed-forward network
-        x = self.gelu(self.fc1(x_combined))
+        # Simple feed-forward layers
+        x = self.relu(self.fc1(x_last))
         x = self.dropout(x)
-        x = self.gelu(self.fc2(x))
-        x = self.dropout(x)
-        x = self.gelu(self.fc3(x))
-        x = self.fc4(x)
+        x = self.fc2(x)
         
         return x
 
