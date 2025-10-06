@@ -442,18 +442,15 @@ class MultiHorizonForecaster:
 
     def train_horizon_model(self, train_loader, val_loader, horizon, epochs, lr):
         """
-        Train with VARIANCE-PRESERVING loss function
-        Prevents mode collapse to mean prediction
+        Train with simple MSE loss function
         """
         sample_batch = next(iter(train_loader))
         input_size = sample_batch[0].shape[2]
         output_size = sample_batch[1].shape[1]
         print(f"Model architecture: Input={input_size}, Hidden={self.hidden_size}, Output={output_size}")
-        print(f"  Multi-scale processing: Short-term (5 steps) + Long-term (full sequence)")
-        print(f"  Signal amplification: Enabled via attention gating")
-        print(f"  Loss function: Variance-Preserving MSE")
+        print(f"  Loss function: MSE (Mean Squared Error)")
         
-        # Initialize enhanced model
+        # Initialize model
         model = MultiHorizonLSTM(
             input_size, self.hidden_size, self.num_layers, output_size,
             dropout=0.1,  # Reduced dropout for small data
@@ -462,29 +459,8 @@ class MultiHorizonForecaster:
         )
         model.to(self.device)
         
-        # VARIANCE-PRESERVING LOSS FUNCTION
-        def variance_preserving_loss(predictions, targets):
-            """
-            Custom loss that encourages variance matching
-            Prevents mode collapse to mean prediction
-            """
-            # Standard MSE
-            mse = nn.functional.mse_loss(predictions, targets)
-            
-            # Variance matching term
-            pred_std = torch.std(predictions)
-            target_std = torch.std(targets)
-            std_penalty = torch.abs(pred_std - target_std) / (target_std + 1e-8)
-            
-            # Mean matching
-            pred_mean = torch.mean(predictions)
-            target_mean = torch.mean(targets)
-            mean_penalty = torch.abs(pred_mean - target_mean) / (torch.abs(target_mean) + 1e-8)
-            
-            # Combined: 70% MSE + 20% variance + 10% mean
-            total_loss = 0.7 * mse + 0.2 * std_penalty + 0.1 * mean_penalty
-            
-            return total_loss, mse.item(), std_penalty.item()
+        # Simple MSE loss function
+        criterion = nn.MSELoss()
         
         # Optimizer with lower weight decay
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-6)
@@ -501,20 +477,18 @@ class MultiHorizonForecaster:
         patience_counter = 0
         best_model_state = None
         
-        print(f"Total epochs {epochs} with Variance-Preserving Loss")
+        print(f"Total epochs {epochs} with MSE Loss")
         for epoch in range(epochs):
             # Training
             model.train()
             train_loss = 0
-            train_mse = 0
-            train_std_penalty = 0
             
             for batch_x, batch_y in train_loader:
                 batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                 optimizer.zero_grad()
                 outputs = model(batch_x)
                 
-                loss, mse, std_penalty = variance_preserving_loss(outputs, batch_y)
+                loss = criterion(outputs, batch_y)
                 
                 if torch.isnan(loss):
                     print(f"⚠️ NaN loss at epoch {epoch}, skipping batch")
@@ -524,30 +498,20 @@ class MultiHorizonForecaster:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
                 train_loss += loss.item()
-                train_mse += mse
-                train_std_penalty += std_penalty
 
             # Validation
             model.eval()
             val_loss = 0
-            val_mse = 0
-            val_std_penalty = 0
             
             with torch.no_grad():
                 for batch_x, batch_y in val_loader:
                     batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                     outputs = model(batch_x)
-                    loss, mse, std_penalty = variance_preserving_loss(outputs, batch_y)
+                    loss = criterion(outputs, batch_y)
                     val_loss += loss.item()
-                    val_mse += mse
-                    val_std_penalty += std_penalty
             
             avg_train_loss = train_loss / len(train_loader)
             avg_val_loss = val_loss / len(val_loader)
-            avg_train_mse = train_mse / len(train_loader)
-            avg_val_mse = val_mse / len(val_loader)
-            avg_train_std = train_std_penalty / len(train_loader)
-            avg_val_std = val_std_penalty / len(val_loader)
             
             scheduler.step()
             
@@ -672,7 +636,7 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test):
     print(f"Data Overview:")
     print(f" X shape: {X_aligned.shape}, Y shape: {Y_aligned.shape}")
     
-    # OPTIMIZED CONFIGURATION FOR VARIANCE PRESERVATION
+    # OPTIMIZED CONFIGURATION FOR LOCAL SENSITIVITY
     sequence_length = 30  # REDUCED from 40 (better for 980 samples)
     forecaster = MultiHorizonForecaster(
         sequence_length=sequence_length,
@@ -686,7 +650,7 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test):
     
     # OPTIMIZED TRAINING PARAMETERS
     test_ratio = 0.1
-    print(f"\n🎯 Training with VARIANCE-PRESERVING settings, test ratio {test_ratio}")
+    print(f"\n🎯 Training with MSE loss, test ratio {test_ratio}")
     forecaster.fit(
         X_aligned.values,
         Y_aligned.values,
