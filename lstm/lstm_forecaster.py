@@ -254,15 +254,22 @@ class MultiHeadAttention(nn.Module):
 
 class MultiHorizonLSTM(nn.Module):
     """
-    Simplified LSTM with strong focus on local (recent) inputs
-    Key fix: Uses last timestep directly instead of averaging across all timesteps
+    Optimized LSTM for short sequences (seq_len <= 10)
+    Features:
+    - Positional encoding for temporal awareness
+    - Recency-biased attention
+    - Last timestep focus for local sensitivity
     """
-    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.2, 
-                 use_attention=True, use_tcn=True, num_heads=4):
+    def __init__(self, input_size, hidden_size, num_layers, output_size, sequence_length=10,
+                 dropout=0.2, use_attention=True, use_tcn=True, num_heads=4):
         super(MultiHorizonLSTM, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.use_attention = use_attention
+        self.sequence_length = sequence_length
+        
+        # Learnable positional encoding (helps model understand time position)
+        self.positional_encoding = nn.Parameter(torch.randn(1, sequence_length, input_size) * 0.1)
         
         # Simple LSTM - just process the sequence
         self.lstm = nn.LSTM(
@@ -271,8 +278,15 @@ class MultiHorizonLSTM(nn.Module):
             num_layers,
             batch_first=True, 
             dropout=dropout if num_layers > 1 else 0,
-            bidirectional=False  # Simpler unidirectional
+            bidirectional=False
         )
+        
+        # Recency-biased attention weights (learnable bias toward recent timesteps)
+        if use_attention:
+            # Create exponential recency bias: recent timesteps get higher initial weights
+            recency_bias = torch.exp(torch.linspace(-2, 0, sequence_length))  # [0.135, ..., 1.0]
+            self.recency_bias = nn.Parameter(recency_bias.unsqueeze(0).unsqueeze(0))  # [1, 1, seq_len]
+            self.attention_weights = nn.Linear(hidden_size, 1)
         
         # Output layers - directly from last LSTM output
         self.dropout = nn.Dropout(dropout)
@@ -282,20 +296,36 @@ class MultiHorizonLSTM(nn.Module):
         
     def forward(self, x):
         """
-        KEY CHANGE: Use ONLY the last timestep output
-        This makes the model highly sensitive to recent inputs
+        Forward pass with positional encoding and recency-biased attention
         """
         batch_size, seq_len, _ = x.size()
+        
+        # Add positional encoding (helps model know "this is timestep 0 vs timestep 9")
+        x = x + self.positional_encoding[:, :seq_len, :]
         
         # LSTM processes full sequence
         lstm_out, (h_n, c_n) = self.lstm(x)  # lstm_out: [batch, seq_len, hidden]
         
-        # ⚡ KEY FIX: Take ONLY the last timestep
-        # This is the most recent information - model will be sensitive to it
-        x_last = lstm_out[:, -1, :]  # [batch, hidden_size]
+        if self.use_attention:
+            # Recency-biased attention: recent timesteps are more important
+            # Compute attention scores
+            attn_scores = self.attention_weights(lstm_out).squeeze(-1)  # [batch, seq_len]
+            
+            # Apply recency bias (multiply by exponential decay)
+            attn_scores = attn_scores * self.recency_bias[:, :, :seq_len].squeeze(0)
+            
+            # Softmax to get attention weights
+            attn_weights = torch.softmax(attn_scores, dim=1).unsqueeze(1)  # [batch, 1, seq_len]
+            
+            # Weighted sum of LSTM outputs
+            context = torch.bmm(attn_weights, lstm_out).squeeze(1)  # [batch, hidden]
+            x_out = context
+        else:
+            # No attention: just use last timestep (most recent)
+            x_out = lstm_out[:, -1, :]  # [batch, hidden_size]
         
         # Simple feed-forward layers
-        x = self.relu(self.fc1(x_last))
+        x = self.relu(self.fc1(x_out))
         x = self.dropout(x)
         x = self.fc2(x)
         
@@ -376,9 +406,11 @@ class MultiHorizonForecaster:
         self.num_heads = num_heads
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # Scalers - RobustScaler for market data with outliers
-        self.scaler_X = RobustScaler()
-        self.scaler_Y = RobustScaler()
+        # Scalers - Custom quantile ranges for better signal preservation
+        # X: Full range (0-100) preserves all feature variations
+        # Y: Remove extreme outliers (1-99) but keep most variance
+        self.scaler_X = RobustScaler(quantile_range=(0, 100))
+        self.scaler_Y = RobustScaler(quantile_range=(1, 99))
         
         # Models for each horizon
         self.models = {}
@@ -453,6 +485,7 @@ class MultiHorizonForecaster:
         # Initialize model
         model = MultiHorizonLSTM(
             input_size, self.hidden_size, self.num_layers, output_size,
+            sequence_length=self.sequence_length,  # Pass sequence_length for positional encoding
             dropout=0.1,  # Reduced dropout for small data
             use_attention=self.use_attention, use_tcn=self.use_tcn, 
             num_heads=self.num_heads
@@ -636,27 +669,30 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test):
     print(f"Data Overview:")
     print(f" X shape: {X_aligned.shape}, Y shape: {Y_aligned.shape}")
     
-    # OPTIMIZED CONFIGURATION FOR LOCAL SENSITIVITY
-    sequence_length = 30  # REDUCED from 40 (better for 980 samples)
+    # OPTIMIZED CONFIGURATION FOR SHORT SEQUENCES (seq_len=10)
+    sequence_length = 10  # Short sequence optimized for local sensitivity
     forecaster = MultiHorizonForecaster(
         sequence_length=sequence_length,
         horizons=[1],
-        hidden_size=96,      # REDUCED from 128 (prevent overfitting)
-        num_layers=2,        # REDUCED from 3 (simpler is better)
-        use_attention=True,  # Keep for weak signals
-        use_tcn=False,       # Disabled
-        num_heads=4          # REDUCED from 8
+        hidden_size=64,      # Reduced to prevent overfitting with short sequences
+        num_layers=1,        # Single layer is better for small data + short sequences
+        use_attention=True,  # Recency-biased attention for local sensitivity
+        use_tcn=False,       # TCN not effective for sequences < 20
+        num_heads=2          # Fewer heads for simpler model
     )
     
-    # OPTIMIZED TRAINING PARAMETERS
+    # OPTIMIZED TRAINING PARAMETERS FOR SEQ=10
     test_ratio = 0.1
-    print(f"\n🎯 Training with MSE loss, test ratio {test_ratio}")
+    print(f"\n🎯 Optimized for sequence_length={sequence_length}")
+    print(f"   - Positional encoding: Enabled")
+    print(f"   - Recency-biased attention: Enabled")
+    print(f"   - Quantile scaling: X(0-100), Y(1-99)")
     forecaster.fit(
         X_aligned.values,
         Y_aligned.values,
-        batch_size=32,      # INCREASED from 16 (more stable)
+        batch_size=16,      # Smaller batch for seq=10 (more updates)
         epochs=500,
-        lr=2e-3,            # REDUCED from 5e-3 (more stable)
+        lr=1e-3,            # Lower learning rate for stability
         test_size=test_ratio
     )
     
