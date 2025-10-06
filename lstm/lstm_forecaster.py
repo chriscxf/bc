@@ -274,6 +274,11 @@ class MultiHorizonLSTM(nn.Module):
         # Input projection to match hidden size
         self.input_proj = nn.Linear(input_size, hidden_size)
         
+        # ⚡ Positional encoding to distinguish timestep importance
+        self.use_positional_encoding = True
+        if self.use_positional_encoding:
+            self.positional_encoding = nn.Parameter(torch.randn(1, 100, hidden_size) * 0.02)
+        
         # Multi-scale temporal processing (key to beat XGBoost)
         # Short-term: captures recent patterns (last 5 steps)
         self.short_term_lstm = nn.LSTM(
@@ -321,6 +326,10 @@ class MultiHorizonLSTM(nn.Module):
             nn.Linear(hidden_size // 2, 1)
         )
         
+        # Multi-scale projection layer (MUST be initialized in __init__, not forward!)
+        multi_scale_size = hidden_size + hidden_size // 4 + hidden_size // 4
+        self.multi_scale_proj = nn.Linear(multi_scale_size, hidden_size)
+        
         # Layer normalization
         self.layer_norm1 = nn.LayerNorm(hidden_size)
         self.layer_norm2 = nn.LayerNorm(hidden_size)
@@ -344,6 +353,10 @@ class MultiHorizonLSTM(nn.Module):
         residual_input = x  # Save for skip connection
         x = self.gelu(x)
         
+        # ⚡ Add positional encoding (helps distinguish recent vs old timesteps)
+        if self.use_positional_encoding and seq_len <= 100:
+            x = x + self.positional_encoding[:, :seq_len, :]
+        
         # TCN blocks (if enabled) - captures long-range dependencies
         if self.use_tcn:
             # TCN expects (batch, channels, seq_len)
@@ -358,36 +371,50 @@ class MultiHorizonLSTM(nn.Module):
         
         # Short-term patterns (last 5 timesteps)
         recent_window = min(5, seq_len)
-        x_short, _ = self.short_term_lstm(x[:, -recent_window:, :])
+        x_short_full, _ = self.short_term_lstm(x[:, -recent_window:, :])
         
         # Long-term patterns (full sequence)
-        x_long, _ = self.long_term_lstm(x)
+        x_long_full, _ = self.long_term_lstm(x)
         
         # Standard bidirectional LSTM
         x_bi, _ = self.lstm(x)
         
-        # Combine multi-scale features
-        # Take last outputs from short and long term
-        short_final = x_short[:, -1:, :].expand(-1, seq_len, -1)  # Expand to seq_len
-        long_final = x_long[:, -1:, :].expand(-1, seq_len, -1)
+        # ⚡ KEY FIX: Use FULL sequences, not just final outputs
+        # Pad short-term output to match sequence length
+        if recent_window < seq_len:
+            padding = torch.zeros(batch_size, seq_len - recent_window, x_short_full.size(-1)).to(x.device)
+            x_short = torch.cat([padding, x_short_full], dim=1)
+        else:
+            x_short = x_short_full
         
         # Concatenate along feature dimension and project back
-        multi_scale = torch.cat([x_bi, short_final, long_final], dim=2)
-        multi_scale_proj = nn.Linear(multi_scale.size(-1), self.hidden_size).to(x.device)
-        x = multi_scale_proj(multi_scale)
+        multi_scale = torch.cat([x_bi, x_short, x_long_full], dim=2)
+        x = self.multi_scale_proj(multi_scale)
         x = self.layer_norm2(x)
         
         # Multi-head attention with signal amplification
         if self.use_attention:
             x = self.attention(x)
         
-        # Temporal importance weighting (which timesteps contain signal)
-        importance_scores = torch.softmax(self.temporal_importance(x), dim=1)
-        x_weighted = torch.sum(x * importance_scores, dim=1)  # [batch, hidden_size]
+        # ⚡ KEY FIX: Focus on RECENT timesteps, not average of all
+        # Use weighted sum with exponential decay favoring recent steps
+        importance_scores = self.temporal_importance(x)  # [batch, seq_len, 1]
         
-        # Add skip connection from input to preserve weak signals
-        input_summary = torch.mean(residual_input, dim=1)  # [batch, hidden_size]
-        x_combined = x_weighted + 0.3 * input_summary  # Weighted residual
+        # Add recency bias: more recent = more important
+        recency_weight = torch.linspace(0.5, 1.5, seq_len).to(x.device).view(1, -1, 1)
+        importance_scores = importance_scores * recency_weight
+        
+        # Softmax to get attention weights
+        importance_weights = torch.softmax(importance_scores, dim=1)
+        x_weighted = torch.sum(x * importance_weights, dim=1)  # [batch, hidden_size]
+        
+        # ⚡ KEY FIX: Add strong focus on LAST timestep (most recent)
+        x_last = x[:, -1, :]  # Last timestep
+        x_combined = 0.6 * x_last + 0.4 * x_weighted  # 60% recent, 40% weighted history
+        
+        # Skip connection from recent input (not average)
+        input_last = residual_input[:, -1, :]  # Last timestep of input
+        x_combined = x_combined + 0.2 * input_last  # Add direct input signal
         x_combined = self.layer_norm3(x_combined)
         
         # Enhanced feed-forward network
