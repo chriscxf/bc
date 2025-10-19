@@ -547,6 +547,7 @@ class NeuralEnsembleForecaster:
         n_selected_features=64,
         use_neural_features=True,
         use_stacking=True,
+        use_ensemble=True,  # NEW: False = single XGBoost only
         autoencoder_epochs=100,
         random_state=42
     ):
@@ -556,6 +557,7 @@ class NeuralEnsembleForecaster:
             n_selected_features: Number of features from traditional selection
             use_neural_features: Whether to use autoencoder features
             use_stacking: Whether to use stacking meta-learner
+            use_ensemble: If True, use all 4 models. If False, use only XGBoost
             autoencoder_epochs: Training epochs for autoencoder
             random_state: Random seed
         """
@@ -563,6 +565,7 @@ class NeuralEnsembleForecaster:
         self.n_selected_features = n_selected_features
         self.use_neural_features = use_neural_features
         self.use_stacking = use_stacking
+        self.use_ensemble = use_ensemble  # NEW parameter
         self.autoencoder_epochs = autoencoder_epochs
         self.random_state = random_state
         
@@ -589,8 +592,11 @@ class NeuralEnsembleForecaster:
         print(f"  Neural features: {n_compressed_features if use_neural_features else 0}")
         print(f"  Selected features: {n_selected_features}")
         print(f"  Total features: {(n_compressed_features if use_neural_features else 0) + n_selected_features}")
-        print(f"  Ensemble: LightGBM + CatBoost + XGBoost (all tuned)")
-        print(f"  Stacking: {'Enabled' if use_stacking else 'Disabled'}")
+        if use_ensemble:
+            print(f"  Models: LightGBM + CatBoost + XGBoost + HistGB (Ensemble)")
+        else:
+            print(f"  Models: XGBoost ONLY (Single Model)")
+        print(f"  Stacking: {'Enabled' if (use_stacking and use_ensemble) else 'Disabled'}")
         print(f"  Device: {self.device}")
         print("="*80)
     
@@ -708,22 +714,33 @@ class NeuralEnsembleForecaster:
         else:
             X_val_processed = None
         
-        # Stage 3: Train ensemble (all models with careful tuning)
-        self.ensemble = BoostingEnsemble(
-            use_lgb=True,
-            use_cat=True,
-            use_xgb=True,
-            random_state=self.random_state
-        )
-        self.ensemble.fit(X_processed, y, X_val_processed, y_val)
-        
-        # Stage 4: Train meta-learner (if stacking enabled)
-        if self.use_stacking:
-            # Get predictions on training data for meta-learner
-            train_predictions = self.ensemble.predict(X_processed)
+        # Stage 3: Train ensemble or single model
+        if self.use_ensemble:
+            # Use all 4 models with stacking
+            self.ensemble = BoostingEnsemble(
+                use_lgb=True,
+                use_cat=True,
+                use_xgb=True,
+                random_state=self.random_state
+            )
+            self.ensemble.fit(X_processed, y, X_val_processed, y_val)
             
-            self.meta_learner = StackingMetaLearner(alpha=1.0)
-            self.meta_learner.fit(train_predictions, y)
+            # Stage 4: Train meta-learner (if stacking enabled)
+            if self.use_stacking:
+                train_predictions = self.ensemble.predict(X_processed)
+                self.meta_learner = StackingMetaLearner(alpha=1.0)
+                self.meta_learner.fit(train_predictions, y)
+        else:
+            # Use ONLY XGBoost (single model, faster)
+            print("\n⚡ Using Single XGBoost Model (Faster)")
+            self.ensemble = BoostingEnsemble(
+                use_lgb=False,
+                use_cat=False,
+                use_xgb=True,
+                random_state=self.random_state
+            )
+            self.ensemble.fit(X_processed, y, X_val_processed, y_val)
+            self.use_stacking = False  # No stacking with single model
         
         print("\n" + "="*80)
         print("✓ TRAINING COMPLETE")
@@ -744,15 +761,33 @@ class NeuralEnsembleForecaster:
         # Transform features
         X_processed = self._prepare_features(X, fit=False)
         
+        # Check for NaN in processed features
+        if np.isnan(X_processed).any():
+            nan_count = np.isnan(X_processed).sum()
+            total_values = X_processed.size
+            print(f"⚠️ WARNING: {nan_count}/{total_values} ({nan_count/total_values*100:.1f}%) NaN values in processed features!")
+            print(f"   This will cause NaN predictions. Check your input data.")
+            # Return NaN predictions
+            return np.full(X.shape[0], np.nan)
+        
         # Get base model predictions
         base_predictions = self.ensemble.predict(X_processed)
+        
+        # Check if ensemble predictions are NaN
+        if isinstance(base_predictions, dict):
+            for model_name, preds in base_predictions.items():
+                if np.isnan(preds).any():
+                    print(f"⚠️ WARNING: {model_name} produced NaN predictions!")
         
         # Combine with meta-learner if enabled
         if self.use_stacking and self.meta_learner is not None:
             predictions = self.meta_learner.predict(base_predictions)
         else:
             # Simple averaging
-            predictions = np.mean([pred.ravel() for pred in base_predictions.values()], axis=0)
+            if isinstance(base_predictions, dict):
+                predictions = np.mean([pred.ravel() for pred in base_predictions.values()], axis=0)
+            else:
+                predictions = base_predictions.ravel()
         
         return predictions
     
@@ -855,7 +890,7 @@ class NeuralEnsembleForecaster:
 # ============================================================================
 
 def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test, 
-                   retrain_freq=1, verbose=True):
+                   retrain_freq=1, use_ensemble=True, verbose=True):
     """
     EXPANDING WINDOW FORECASTING - Trains a new model for each prediction date
     
@@ -872,6 +907,7 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test,
         target_list: List of target column names
         X_to_test: Features for prediction period (for compatibility, but uses X_full internally)
         retrain_freq: Retrain every N steps (1 = every step, 5 = every 5 steps for speed)
+        use_ensemble: If True, use all 4 models. If False, use only XGBoost (FASTER)
         verbose: Print progress
     
     Returns:
@@ -883,6 +919,7 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test,
     print(f"Prediction start index: {pred_start}")
     print(f"Total prediction steps: {len(X_full) - pred_start}")
     print(f"Retrain frequency: Every {retrain_freq} step(s)")
+    print(f"Model type: {'Ensemble (4 models)' if use_ensemble else 'Single XGBoost'}")
     print(f"Initial training samples: {pred_start}")
     print("="*80)
     
@@ -951,7 +988,8 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test,
                 n_compressed_features=32,
                 n_selected_features=64,
                 use_neural_features=True,
-                use_stacking=True,
+                use_stacking=use_ensemble,  # Only use stacking if ensemble enabled
+                use_ensemble=use_ensemble,  # NEW: Control ensemble vs single model
                 autoencoder_epochs=50,  # Reduced for speed in rolling mode
                 random_state=42
             )
