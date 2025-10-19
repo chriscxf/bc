@@ -322,19 +322,21 @@ class BoostingEnsemble:
         )
     
     def _init_xgboost(self):
-        """Initialize XGBoost with financial-optimized params"""
+        """Initialize XGBoost with carefully tuned financial params"""
         return xgb.XGBRegressor(
-            n_estimators=500,
-            learning_rate=0.05,
-            max_depth=6,
-            min_child_weight=3,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_alpha=0.1,
-            reg_lambda=1.0,
+            n_estimators=1000,           # More trees for better learning
+            learning_rate=0.03,          # Lower for stability
+            max_depth=6,                 # Moderate depth
+            min_child_weight=3,          # Conservative splits
+            subsample=0.8,               # Row sampling
+            colsample_bytree=0.8,        # Column sampling
+            gamma=0.1,                   # Minimum loss reduction
+            reg_alpha=1.0,               # L1 regularization
+            reg_lambda=2.0,              # L2 regularization (higher for financial data)
             random_state=self.random_state,
             verbosity=0,
-            n_jobs=-1
+            n_jobs=-1,
+            tree_method='hist'           # Faster for large datasets
         )
     
     def _init_histgb(self):
@@ -576,13 +578,13 @@ class NeuralEnsembleForecaster:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         print("="*80)
-        print("NEURAL ENSEMBLE FORECASTER - Optimized to Beat XGBoost")
+        print("NEURAL FEATURE REDUCTION + XGBOOST FORECASTER")
         print("="*80)
         print(f"\nConfiguration:")
         print(f"  Neural features: {n_compressed_features if use_neural_features else 0}")
         print(f"  Selected features: {n_selected_features}")
         print(f"  Total features: {(n_compressed_features if use_neural_features else 0) + n_selected_features}")
-        print(f"  Stacking: {'Enabled' if use_stacking else 'Disabled'}")
+        print(f"  Prediction model: XGBoost (tuned)")
         print(f"  Device: {self.device}")
         print("="*80)
     
@@ -700,22 +702,17 @@ class NeuralEnsembleForecaster:
         else:
             X_val_processed = None
         
-        # Stage 3: Train ensemble
+        # Stage 3: Train ensemble (using only XGBoost for best performance)
         self.ensemble = BoostingEnsemble(
-            use_lgb=True,
-            use_cat=True,
-            use_xgb=True,
+            use_lgb=False,               # Disable LightGBM
+            use_cat=False,               # Disable CatBoost
+            use_xgb=True,                # Use only XGBoost with tuned params
             random_state=self.random_state
         )
         self.ensemble.fit(X_processed, y, X_val_processed, y_val)
         
-        # Stage 4: Train meta-learner (if stacking enabled)
-        if self.use_stacking:
-            # Get predictions on training data for meta-learner
-            train_predictions = self.ensemble.predict(X_processed)
-            
-            self.meta_learner = StackingMetaLearner(alpha=1.0)
-            self.meta_learner.fit(train_predictions, y)
+        # Stage 4: Skip meta-learner since we only have one model
+        self.use_stacking = False  # Override since single model doesn't need stacking
         
         print("\n" + "="*80)
         print("✓ TRAINING COMPLETE")
@@ -739,11 +736,11 @@ class NeuralEnsembleForecaster:
         # Get base model predictions
         base_predictions = self.ensemble.predict(X_processed)
         
-        # Combine with meta-learner if enabled
-        if self.use_stacking and self.meta_learner is not None:
-            predictions = self.meta_learner.predict(base_predictions)
+        # Since we only use XGBoost, directly return its predictions
+        if 'xgb' in base_predictions:
+            predictions = base_predictions['xgb'].ravel()
         else:
-            # Simple averaging
+            # Fallback to averaging if somehow multiple models exist
             predictions = np.mean([pred.ravel() for pred in base_predictions.values()], axis=0)
         
         return predictions
