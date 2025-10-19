@@ -896,7 +896,7 @@ class NeuralEnsembleForecaster:
 # ============================================================================
 
 def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test=None, 
-                   retrain_freq=1, use_ensemble=True, verbose=True):
+                   retrain_freq=1, use_ensemble=False, use_neural_features=False, verbose=True):
     """
     EXPANDING WINDOW FORECASTING - Trains a new model for each prediction date
     
@@ -915,7 +915,8 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test=None,
         target_list: List of target column names
         X_to_test: DEPRECATED (ignored, kept for compatibility). Uses X_full internally.
         retrain_freq: Retrain every N steps (1 = every step, 5 = every 5 steps for speed)
-        use_ensemble: If True, use all 4 models. If False, use only XGBoost (FASTER)
+        use_ensemble: If True, use all 4 models. If False, use only XGBoost (FASTER, DEFAULT)
+        use_neural_features: If True, use autoencoder for feature extraction (slower). If False, skip autoencoder (FASTER, DEFAULT)
         verbose: Print progress
     
     Returns:
@@ -962,6 +963,8 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test=None,
     print(f"\nConfiguration:")
     print(f"  Retrain frequency: Every {retrain_freq} step(s)")
     print(f"  Model type: {'Ensemble (4 models)' if use_ensemble else 'Single XGBoost'}")
+    print(f"  Neural features: {'Enabled (Autoencoder)' if use_neural_features else 'Disabled (Traditional only)'}")
+    print(f"  Speed: {'Slower (full pipeline)' if use_neural_features else 'FASTER (XGBoost only)'}")
     print("="*80)
     
     # Select numeric columns
@@ -1028,9 +1031,9 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test=None,
             forecaster = NeuralEnsembleForecaster(
                 n_compressed_features=32,
                 n_selected_features=64,
-                use_neural_features=True,
+                use_neural_features=use_neural_features,  # Control autoencoder usage
                 use_stacking=use_ensemble,  # Only use stacking if ensemble enabled
-                use_ensemble=use_ensemble,  # NEW: Control ensemble vs single model
+                use_ensemble=use_ensemble,  # Control ensemble vs single model
                 autoencoder_epochs=50,  # Reduced for speed in rolling mode
                 random_state=42
             )
@@ -1140,7 +1143,7 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test=None,
 
 
 def run_rolling_forecasting(X_full, Y_full, pred_start, target_list, window_size=252, 
-                           retrain_freq=20, verbose=True):
+                           retrain_freq=20, use_ensemble=False, use_neural_features=False, verbose=True):
     """
     Rolling window forecasting - trains and predicts one step at a time
     More realistic but MUCH slower (retrains model multiple times)
@@ -1152,6 +1155,8 @@ def run_rolling_forecasting(X_full, Y_full, pred_start, target_list, window_size
         target_list: List of target column names
         window_size: Rolling window size (252 = 1 year daily data)
         retrain_freq: Retrain every N steps (1 = every step, 20 = every 20 steps)
+        use_ensemble: If True, use all 4 models. If False, use only XGBoost (FASTER, DEFAULT)
+        use_neural_features: If True, use autoencoder (slower). If False, skip autoencoder (FASTER, DEFAULT)
         verbose: Print progress
     
     Returns:
@@ -1208,8 +1213,9 @@ def run_rolling_forecasting(X_full, Y_full, pred_start, target_list, window_size
             forecaster = NeuralEnsembleForecaster(
                 n_compressed_features=32,
                 n_selected_features=64,
-                use_neural_features=True,
-                use_stacking=True,
+                use_neural_features=use_neural_features,  # Control autoencoder usage
+                use_stacking=use_ensemble,  # Only use stacking if ensemble enabled
+                use_ensemble=use_ensemble,  # Control ensemble vs single model
                 autoencoder_epochs=50,  # Faster for rolling
                 random_state=42
             )
@@ -1309,12 +1315,25 @@ if __name__ == "__main__":
     
     # USAGE (NO separate test dataset needed!)
     result_df = run_forecasting(
-        X_full=X_full,           # ALL data (1500 samples)
-        Y_full=Y_full,           # ALL targets (1500 samples)
-        pred_start=1000,         # Start predictions at index 1000
-        target_list=['return'],  # Target column name
-        retrain_freq=5,          # Retrain every 5 steps
-        use_ensemble=True,       # Use all 4 models (or False for single XGBoost)
+        X_full=X_full,                    # ALL data (1500 samples)
+        Y_full=Y_full,                    # ALL targets (1500 samples)
+        pred_start=1000,                  # Start predictions at index 1000
+        target_list=['return'],           # Target column name
+        retrain_freq=5,                   # Retrain every 5 steps
+        use_ensemble=False,               # Default: False = XGBoost only (FASTER!)
+        use_neural_features=False,        # Default: False = No autoencoder (FASTER!)
+        verbose=True
+    )
+    
+    # For full ensemble with neural features (slower but potentially better):
+    result_df = run_forecasting(
+        X_full=X_full,
+        Y_full=Y_full,
+        pred_start=1000,
+        target_list=['return'],
+        retrain_freq=5,
+        use_ensemble=True,                # Use all 4 models
+        use_neural_features=True,         # Use autoencoder
         verbose=True
     )
     
