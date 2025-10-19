@@ -290,32 +290,35 @@ class BoostingEnsemble:
         self.model_weights = {}
         
     def _init_lightgbm(self):
-        """Initialize LightGBM with financial-optimized params"""
+        """Initialize LightGBM with carefully tuned financial params"""
         return lgb.LGBMRegressor(
-            n_estimators=500,
-            learning_rate=0.05,
-            max_depth=6,
-            num_leaves=31,
-            min_child_samples=20,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_alpha=0.1,
-            reg_lambda=1.0,
+            n_estimators=1000,           # More trees for better convergence
+            learning_rate=0.03,          # Lower learning rate for stability
+            max_depth=6,                 # Moderate depth
+            num_leaves=31,               # Balanced complexity (2^5-1)
+            min_child_samples=20,        # Prevent overfitting on small partitions
+            subsample=0.8,               # Row sampling for regularization
+            colsample_bytree=0.8,        # Column sampling for regularization
+            reg_alpha=1.0,               # L1 regularization (increased)
+            reg_lambda=2.0,              # L2 regularization (increased for financial data)
+            min_split_gain=0.01,         # Minimum gain required for splitting
             random_state=self.random_state,
             verbose=-1,
             n_jobs=-1
         )
     
     def _init_catboost(self):
-        """Initialize CatBoost with financial-optimized params"""
+        """Initialize CatBoost with carefully tuned financial params"""
         return cb.CatBoostRegressor(
-            iterations=500,
-            learning_rate=0.05,
-            depth=6,
-            l2_leaf_reg=3.0,
-            subsample=0.8,
-            random_strength=0.5,
-            bagging_temperature=0.2,
+            iterations=1000,             # More iterations for better learning
+            learning_rate=0.03,          # Lower learning rate for stability
+            depth=6,                     # Moderate depth
+            l2_leaf_reg=5.0,            # Increased L2 regularization for financial data
+            subsample=0.8,               # Row sampling
+            random_strength=0.5,         # Randomness for regularization
+            bagging_temperature=0.2,     # Controls bagging aggressiveness
+            border_count=128,            # Feature discretization buckets
+            min_data_in_leaf=20,        # Minimum samples per leaf
             random_seed=self.random_state,
             verbose=False,
             thread_count=-1
@@ -340,13 +343,15 @@ class BoostingEnsemble:
         )
     
     def _init_histgb(self):
-        """Initialize HistGradientBoosting (always available)"""
+        """Initialize HistGradientBoosting with carefully tuned financial params"""
         return HistGradientBoostingRegressor(
-            max_iter=500,
-            learning_rate=0.05,
-            max_depth=6,
-            min_samples_leaf=20,
-            l2_regularization=1.0,
+            max_iter=1000,               # More iterations for better convergence
+            learning_rate=0.03,          # Lower learning rate for stability
+            max_depth=6,                 # Moderate depth
+            min_samples_leaf=20,         # Prevent overfitting
+            max_leaf_nodes=31,           # Control tree complexity
+            l2_regularization=2.0,       # Increased L2 for financial data
+            max_bins=255,                # Feature discretization bins
             random_state=self.random_state
         )
     
@@ -578,13 +583,14 @@ class NeuralEnsembleForecaster:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         print("="*80)
-        print("NEURAL FEATURE REDUCTION + XGBOOST FORECASTER")
+        print("NEURAL ENSEMBLE FORECASTER - CAREFULLY TUNED")
         print("="*80)
         print(f"\nConfiguration:")
         print(f"  Neural features: {n_compressed_features if use_neural_features else 0}")
         print(f"  Selected features: {n_selected_features}")
         print(f"  Total features: {(n_compressed_features if use_neural_features else 0) + n_selected_features}")
-        print(f"  Prediction model: XGBoost (tuned)")
+        print(f"  Ensemble: LightGBM + CatBoost + XGBoost (all tuned)")
+        print(f"  Stacking: {'Enabled' if use_stacking else 'Disabled'}")
         print(f"  Device: {self.device}")
         print("="*80)
     
@@ -702,17 +708,22 @@ class NeuralEnsembleForecaster:
         else:
             X_val_processed = None
         
-        # Stage 3: Train ensemble (using only XGBoost for best performance)
+        # Stage 3: Train ensemble (all models with careful tuning)
         self.ensemble = BoostingEnsemble(
-            use_lgb=False,               # Disable LightGBM
-            use_cat=False,               # Disable CatBoost
-            use_xgb=True,                # Use only XGBoost with tuned params
+            use_lgb=True,
+            use_cat=True,
+            use_xgb=True,
             random_state=self.random_state
         )
         self.ensemble.fit(X_processed, y, X_val_processed, y_val)
         
-        # Stage 4: Skip meta-learner since we only have one model
-        self.use_stacking = False  # Override since single model doesn't need stacking
+        # Stage 4: Train meta-learner (if stacking enabled)
+        if self.use_stacking:
+            # Get predictions on training data for meta-learner
+            train_predictions = self.ensemble.predict(X_processed)
+            
+            self.meta_learner = StackingMetaLearner(alpha=1.0)
+            self.meta_learner.fit(train_predictions, y)
         
         print("\n" + "="*80)
         print("✓ TRAINING COMPLETE")
@@ -736,11 +747,11 @@ class NeuralEnsembleForecaster:
         # Get base model predictions
         base_predictions = self.ensemble.predict(X_processed)
         
-        # Since we only use XGBoost, directly return its predictions
-        if 'xgb' in base_predictions:
-            predictions = base_predictions['xgb'].ravel()
+        # Combine with meta-learner if enabled
+        if self.use_stacking and self.meta_learner is not None:
+            predictions = self.meta_learner.predict(base_predictions)
         else:
-            # Fallback to averaging if somehow multiple models exist
+            # Simple averaging
             predictions = np.mean([pred.ravel() for pred in base_predictions.values()], axis=0)
         
         return predictions
