@@ -854,96 +854,166 @@ class NeuralEnsembleForecaster:
 # CONVENIENCE FUNCTIONS (Same interface as lstm_forecaster.py)
 # ============================================================================
 
-def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test):
+def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test, 
+                   retrain_freq=1, verbose=True):
     """
-    Main forecasting function - same interface as lstm_forecaster.py
+    EXPANDING WINDOW FORECASTING - Trains a new model for each prediction date
+    
+    For each prediction at time t:
+    - Training data: 1 to t-1 (expanding window)
+    - Prediction: time t
+    
+    This is TRUE walk-forward validation for time series.
     
     Args:
         X_full: Full feature DataFrame
         Y_full: Full target DataFrame
         pred_start: Index to start predictions
         target_list: List of target column names
-        X_to_test: Features for prediction period
+        X_to_test: Features for prediction period (for compatibility, but uses X_full internally)
+        retrain_freq: Retrain every N steps (1 = every step, 5 = every 5 steps for speed)
+        verbose: Print progress
     
     Returns:
         DataFrame with predictions and actuals
     """
     print("\n" + "="*80)
-    print("NEURAL ENSEMBLE FORECASTING")
+    print("EXPANDING WINDOW FORECASTING (TRAIN ON 1:t-1, PREDICT t)")
+    print("="*80)
+    print(f"Prediction start index: {pred_start}")
+    print(f"Total prediction steps: {len(X_full) - pred_start}")
+    print(f"Retrain frequency: Every {retrain_freq} step(s)")
+    print(f"Initial training samples: {pred_start}")
     print("="*80)
     
-    # Prepare training data
-    X_train = X_full.iloc[:pred_start, :].select_dtypes(include=[np.number])
-    Y_train = Y_full.iloc[:pred_start, :]
+    # Select numeric columns
+    X_numeric = X_full.select_dtypes(include=[np.number])
+    numeric_cols = list(X_numeric.columns)
     
-    print(f"\nTraining period: {X_train.index[0]} to {X_train.index[-1]}")
-    print(f"Prediction period: {X_to_test.index[0]} to {X_to_test.index[-1]}")
-    print(f"Training samples: {len(X_train)}")
-    print(f"Features: {X_train.shape[1]}")
+    # Storage for predictions
+    predictions_list = []
+    actuals_list = []
+    dates_list = []
     
-    # Initialize forecaster
-    forecaster = NeuralEnsembleForecaster(
-        n_compressed_features=32,
-        n_selected_features=64,
-        use_neural_features=True,
-        use_stacking=True,
-        autoencoder_epochs=100
-    )
+    # For tracking feature importance over time
+    feature_importance_history = []
+    forecaster = None
     
-    # Train with validation split
-    split_idx = int(len(X_train) * 0.9)
-    X_train_split = X_train.iloc[:split_idx].values
-    Y_train_split = Y_train.iloc[:split_idx].values
-    X_val_split = X_train.iloc[split_idx:].values
-    Y_val_split = Y_train.iloc[split_idx:].values
+    # Expanding window prediction loop
+    n_steps = len(X_full) - pred_start
     
-    forecaster.fit(
-        X_train_split,
-        Y_train_split,
-        X_val=X_val_split,
-        y_val=Y_val_split,
-        feature_names=list(X_train.columns)
-    )
-    
-    # Make predictions
-    X_test = X_to_test[X_train.columns]
-    
-    # Check for NaN in test features
-    nan_mask = X_test.isna().any(axis=1)
-    n_nan = nan_mask.sum()
-    if n_nan > 0:
-        print(f"\n⚠️ Warning: {n_nan} rows ({n_nan/len(X_test)*100:.1f}%) have NaN in features")
-        print(f"   These rows will produce NaN predictions")
-        print(f"   First NaN row: {X_test.index[nan_mask][0]}")
-        print(f"   NaN columns: {X_test.columns[X_test.isna().any()].tolist()[:10]}")
-    
-    predictions = forecaster.predict(X_test.values)
+    for i in range(n_steps):
+        current_idx = pred_start + i
+        
+        # Expanding training window: from start (0) to current_idx-1
+        X_train = X_numeric.iloc[:current_idx]
+        Y_train = Y_full.iloc[:current_idx]
+        
+        # Test point: current_idx
+        X_test = X_numeric.iloc[current_idx:current_idx+1]
+        Y_test = Y_full.iloc[current_idx:current_idx+1]
+        
+        # Check for NaN in test features
+        if X_test.isna().any().any():
+            if verbose and i < 10:
+                print(f"⚠️ Step {i+1}/{n_steps} (idx={current_idx}): Skipping due to NaN in features")
+            predictions_list.append([np.nan] * len(target_list))
+            actuals_list.append(Y_test[target_list].values[0])
+            dates_list.append(X_test.index[0])
+            continue
+        
+        # Retrain model every retrain_freq steps
+        if i % retrain_freq == 0 or forecaster is None:
+            if verbose:
+                print(f"\n[Step {i+1}/{n_steps}] Training on {len(X_train)} samples (index 0 to {current_idx-1})")
+                print(f"  Predicting for index {current_idx} ({X_test.index[0]})")
+            
+            # Initialize new forecaster
+            forecaster = NeuralEnsembleForecaster(
+                n_compressed_features=32,
+                n_selected_features=64,
+                use_neural_features=True,
+                use_stacking=True,
+                autoencoder_epochs=50,  # Reduced for speed in rolling mode
+                random_state=42
+            )
+            
+            # Split for validation (use last 10% of training data)
+            split_idx = int(len(X_train) * 0.9)
+            
+            try:
+                forecaster.fit(
+                    X_train.iloc[:split_idx].values,
+                    Y_train.iloc[:split_idx].values,
+                    X_val=X_train.iloc[split_idx:].values,
+                    y_val=Y_train.iloc[split_idx:].values,
+                    feature_names=numeric_cols
+                )
+                
+                # Track feature importance every 20 steps
+                if i % 20 == 0:
+                    importance = forecaster.get_feature_importance(top_k=10)
+                    feature_importance_history.append({
+                        'step': i,
+                        'date': X_test.index[0],
+                        'importance': importance
+                    })
+                    
+            except Exception as e:
+                print(f"⚠️ Training failed at step {i+1}: {e}")
+                predictions_list.append([np.nan] * len(target_list))
+                actuals_list.append(Y_test[target_list].values[0])
+                dates_list.append(X_test.index[0])
+                continue
+        
+        # Make prediction for current time point
+        try:
+            pred = forecaster.predict(X_test.values)
+            predictions_list.append(pred[0])
+        except Exception as e:
+            if verbose and i < 10:
+                print(f"⚠️ Prediction failed at step {i+1}: {e}")
+            predictions_list.append([np.nan] * len(target_list))
+        
+        actuals_list.append(Y_test[target_list].values[0])
+        dates_list.append(X_test.index[0])
+        
+        # Progress indicator
+        if verbose and (i + 1) % 10 == 0:
+            print(f"  Completed {i+1}/{n_steps} predictions...")
     
     # Create result DataFrame
-    result_df = pd.DataFrame(predictions, columns=target_list, index=X_to_test.index)
+    predictions_array = np.array(predictions_list)
+    actuals_array = np.array(actuals_list)
     
-    # Add actual values if available
-    if pred_start < len(Y_full):
-        # Align indices properly
-        y_test_slice = Y_full.iloc[pred_start:, :]
-        
-        # Match lengths
-        min_len = min(len(result_df), len(y_test_slice))
-        result_df = result_df.iloc[:min_len]
-        y_test_slice = y_test_slice.iloc[:min_len]
-        
-        # Add actuals with matching index
-        for col in target_list:
-            result_df[f"actual_{col}"] = y_test_slice[col].values
-        
-        print(f"\n✓ Matched {min_len} predictions with actuals")
+    result_df = pd.DataFrame(
+        predictions_array,
+        columns=target_list,
+        index=dates_list
+    )
     
-    # Print feature importance
+    # Add actual values
+    for j, col in enumerate(target_list):
+        result_df[f"actual_{col}"] = actuals_array[:, j]
+    
     print("\n" + "="*80)
-    print("TOP 20 MOST IMPORTANT FEATURES")
+    print("FORECASTING COMPLETE")
     print("="*80)
-    importance = forecaster.get_feature_importance(top_k=20)
-    print(importance.to_string(index=False))
+    print(f"Total predictions: {len(result_df)}")
+    print(f"Valid predictions: {(~result_df[target_list[0]].isna()).sum()}")
+    print(f"NaN predictions: {result_df[target_list[0]].isna().sum()}")
+    
+    # Print feature importance evolution if tracked
+    if len(feature_importance_history) > 0:
+        print("\n" + "="*80)
+        print("FEATURE IMPORTANCE EVOLUTION (Sampled every 20 steps)")
+        print("="*80)
+        for record in feature_importance_history[:5]:  # Show first 5 samples
+            print(f"\nStep {record['step']} ({record['date']}):")
+            print(record['importance'].head(5).to_string(index=False))
+        if len(feature_importance_history) > 5:
+            print(f"\n... and {len(feature_importance_history) - 5} more checkpoints")
+    
     print("="*80 + "\n")
     
     return result_df
@@ -1106,24 +1176,45 @@ if __name__ == "__main__":
     plt.show()
     """)
     
-    print("\n3. Same Interface as lstm_forecaster.py:")
+    print("\n3. EXPANDING WINDOW (Train on 1:t-1, Predict t):")
     print("""
     from neural_ensemble_forecaster import run_forecasting
     
+    # Retrain every step (slowest, most accurate)
     result_df = run_forecasting(
         X_full=X_full,
         Y_full=Y_full,
-        pred_start=900,
-        target_list=['target'],
-        X_to_test=X_test
+        pred_start=1000,
+        target_list=['target_col'],
+        X_to_test=X_full.iloc[1000:],
+        retrain_freq=1,  # Train new model for EACH prediction
+        verbose=True
+    )
+    
+    # Retrain every 5 steps (faster, still adaptive)
+    result_df = run_forecasting(
+        X_full=X_full,
+        Y_full=Y_full,
+        pred_start=1000,
+        target_list=['target_col'],
+        X_to_test=X_full.iloc[1000:],
+        retrain_freq=5,  # Train new model every 5 predictions
+        verbose=True
     )
     """)
     
-    print("\n4. Evaluate Performance:")
+    print("\n4. Rolling Window Forecasting (Fixed Window Size):")
     print("""
-    train_metrics, test_metrics = forecaster.print_performance(
-        X_train, y_train,
-        X_test, y_test
+    from neural_ensemble_forecaster import run_rolling_forecasting
+    
+    result_df = run_rolling_forecasting(
+        X_full=X_full,
+        Y_full=Y_full,
+        pred_start=1000,
+        target_list=['target_col'],
+        window_size=252,    # Use last 252 days
+        retrain_freq=5,
+        verbose=True
     )
     """)
     
