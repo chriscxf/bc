@@ -898,18 +898,37 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test):
     )
     
     # Make predictions
-    X_test = X_to_test[X_train.columns].values
-    predictions = forecaster.predict(X_test)
+    X_test = X_to_test[X_train.columns]
+    
+    # Check for NaN in test features
+    nan_mask = X_test.isna().any(axis=1)
+    n_nan = nan_mask.sum()
+    if n_nan > 0:
+        print(f"\n⚠️ Warning: {n_nan} rows ({n_nan/len(X_test)*100:.1f}%) have NaN in features")
+        print(f"   These rows will produce NaN predictions")
+        print(f"   First NaN row: {X_test.index[nan_mask][0]}")
+        print(f"   NaN columns: {X_test.columns[X_test.isna().any()].tolist()[:10]}")
+    
+    predictions = forecaster.predict(X_test.values)
     
     # Create result DataFrame
     result_df = pd.DataFrame(predictions, columns=target_list, index=X_to_test.index)
     
     # Add actual values if available
     if pred_start < len(Y_full):
-        actual_df = Y_full.iloc[pred_start:pred_start+len(predictions), :].copy()
-        actual_df.columns = [f"actual_{col}" for col in target_list]
-        actual_df.index = X_to_test.index[:len(actual_df)]
-        result_df = pd.concat([result_df, actual_df], axis=1)
+        # Align indices properly
+        y_test_slice = Y_full.iloc[pred_start:, :]
+        
+        # Match lengths
+        min_len = min(len(result_df), len(y_test_slice))
+        result_df = result_df.iloc[:min_len]
+        y_test_slice = y_test_slice.iloc[:min_len]
+        
+        # Add actuals with matching index
+        for col in target_list:
+            result_df[f"actual_{col}"] = y_test_slice[col].values
+        
+        print(f"\n✓ Matched {min_len} predictions with actuals")
     
     # Print feature importance
     print("\n" + "="*80)
@@ -917,6 +936,129 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test):
     print("="*80)
     importance = forecaster.get_feature_importance(top_k=20)
     print(importance.to_string(index=False))
+    print("="*80 + "\n")
+    
+    return result_df
+
+
+def run_rolling_forecasting(X_full, Y_full, pred_start, target_list, window_size=252, 
+                           retrain_freq=20, verbose=True):
+    """
+    Rolling window forecasting - trains and predicts one step at a time
+    More realistic but MUCH slower (retrains model multiple times)
+    
+    Args:
+        X_full: Full feature DataFrame
+        Y_full: Full target DataFrame
+        pred_start: Index to start predictions
+        target_list: List of target column names
+        window_size: Rolling window size (252 = 1 year daily data)
+        retrain_freq: Retrain every N steps (1 = every step, 20 = every 20 steps)
+        verbose: Print progress
+    
+    Returns:
+        DataFrame with predictions and actuals
+    """
+    print("\n" + "="*80)
+    print("ROLLING WINDOW FORECASTING (REALISTIC BUT SLOW)")
+    print("="*80)
+    print(f"Window size: {window_size} samples")
+    print(f"Retrain frequency: Every {retrain_freq} steps")
+    print(f"Prediction steps: {len(Y_full) - pred_start}")
+    print("="*80)
+    
+    # Select numeric columns
+    X_numeric = X_full.select_dtypes(include=[np.number])
+    numeric_cols = list(X_numeric.columns)
+    
+    predictions_list = []
+    actuals_list = []
+    dates_list = []
+    forecaster = None
+    
+    # Rolling prediction loop
+    n_steps = len(Y_full) - pred_start
+    for i in range(n_steps):
+        current_idx = pred_start + i
+        
+        # Determine training window
+        train_start = max(0, current_idx - window_size)
+        train_end = current_idx
+        
+        # Get training data
+        X_train = X_numeric.iloc[train_start:train_end]
+        Y_train = Y_full.iloc[train_start:train_end]
+        
+        # Get test data (next time point)
+        X_test = X_numeric.iloc[current_idx:current_idx+1]
+        Y_test = Y_full.iloc[current_idx:current_idx+1]
+        
+        # Check for NaN
+        if X_test.isna().any().any():
+            if verbose and i < 5:
+                print(f"⚠️ Step {i}: Skipping due to NaN in features")
+            predictions_list.append(np.nan)
+            actuals_list.append(Y_test[target_list[0]].values[0])
+            dates_list.append(X_test.index[0])
+            continue
+        
+        # Retrain model every retrain_freq steps or first step
+        if i == 0 or i % retrain_freq == 0:
+            if verbose:
+                print(f"[{i+1}/{n_steps}] Retraining on {len(X_train)} samples...")
+            
+            forecaster = NeuralEnsembleForecaster(
+                n_compressed_features=32,
+                n_selected_features=64,
+                use_neural_features=True,
+                use_stacking=True,
+                autoencoder_epochs=50,  # Faster for rolling
+                random_state=42
+            )
+            
+            # Split for validation
+            split_idx = int(len(X_train) * 0.9)
+            forecaster.fit(
+                X_train.iloc[:split_idx].values,
+                Y_train.iloc[:split_idx].values,
+                X_val=X_train.iloc[split_idx:].values,
+                y_val=Y_train.iloc[split_idx:].values,
+                feature_names=numeric_cols
+            )
+        
+        # Make prediction
+        pred = forecaster.predict(X_test.values)[0, 0]
+        predictions_list.append(pred)
+        actuals_list.append(Y_test[target_list[0]].values[0])
+        dates_list.append(X_test.index[0])
+        
+        if verbose and (i + 1) % 50 == 0:
+            print(f"   Progress: {i+1}/{n_steps} ({(i+1)/n_steps*100:.1f}%)")
+    
+    # Create result DataFrame
+    result_df = pd.DataFrame({
+        target_list[0]: predictions_list,
+        f"actual_{target_list[0]}": actuals_list
+    }, index=dates_list)
+    
+    print("\n" + "="*80)
+    print("ROLLING FORECAST COMPLETE")
+    print("="*80)
+    
+    # Calculate metrics
+    valid_mask = ~(np.isnan(predictions_list) | np.isnan(actuals_list))
+    if np.sum(valid_mask) > 0:
+        pred_valid = np.array(predictions_list)[valid_mask]
+        actual_valid = np.array(actuals_list)[valid_mask]
+        rmse = np.sqrt(mean_squared_error(actual_valid, pred_valid))
+        mae = mean_absolute_error(actual_valid, pred_valid)
+        r2 = r2_score(actual_valid, pred_valid)
+        
+        print(f"Valid predictions: {np.sum(valid_mask)}/{len(predictions_list)}")
+        print(f"RMSE: {rmse:.6f}")
+        print(f"MAE:  {mae:.6f}")
+        print(f"R²:   {r2:.6f}")
+    
     print("="*80 + "\n")
     
     return result_df
