@@ -403,7 +403,6 @@ class BoostingEnsemble:
                 self.models['xgb'].fit(
                     X, y.ravel(),
                     eval_set=[(X_val, y_val.ravel())],
-                    early_stopping_rounds=50,
                     verbose=False
                 )
             else:
