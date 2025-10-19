@@ -70,10 +70,14 @@ def plot_forecast(data, actuals=None, target_col=None, dates=None, save_path=Non
             pred_valid = predictions[valid_mask]
             actual_valid = actuals[valid_mask]
             
-            mse = mean_squared_error(actual_valid, pred_valid)
+            # Convert to millions for calculation
+            pred_valid_millions = pred_valid / 1e6
+            actual_valid_millions = actual_valid / 1e6
+            
+            mse = mean_squared_error(actual_valid_millions, pred_valid_millions)
             rmse = np.sqrt(mse)
-            mae = mean_absolute_error(actual_valid, pred_valid)
-            r2 = r2_score(actual_valid, pred_valid)
+            mae = mean_absolute_error(actual_valid_millions, pred_valid_millions)
+            r2 = r2_score(actual_valid_millions, pred_valid_millions)
         else:
             print("❌ Error: All values are NaN. Cannot calculate metrics.")
             mse = rmse = mae = r2 = None
@@ -83,29 +87,30 @@ def plot_forecast(data, actuals=None, target_col=None, dates=None, save_path=Non
     # Create plot
     fig, ax = plt.subplots(figsize=(14, 6))
     
+    # Convert to millions for plotting
+    predictions_millions = predictions / 1e6
+    actuals_millions = actuals / 1e6 if actuals is not None else None
+    
     # Plot predictions
-    ax.plot(dates, predictions, label='Forecast', color='#2E86DE', linewidth=2, alpha=0.8)
+    ax.plot(dates, predictions_millions, label='Forecast', color='#2E86DE', linewidth=2, alpha=0.8)
     
     # Plot actuals if available
-    if actuals is not None:
-        ax.plot(dates, actuals, label='Actual', color='#EE5A6F', linewidth=2, alpha=0.8)
+    if actuals_millions is not None:
+        ax.plot(dates, actuals_millions, label='Actual', color='#EE5A6F', linewidth=2, alpha=0.8)
         
         # Shade error region
-        ax.fill_between(dates, predictions, actuals, alpha=0.2, color='gray', label='Error')
+        ax.fill_between(dates, predictions_millions, actuals_millions, alpha=0.2, color='gray', label='Error')
     
     # Add metrics text box
     if rmse is not None:
-        # Convert to millions for display
-        rmse_millions = rmse / 1e6
-        mae_millions = mae / 1e6
-        textstr = f'RMSE: {rmse_millions:.4f}M\nMAE:  {mae_millions:.4f}M\nR²:   {r2:.4f}'
+        textstr = f'RMSE: {rmse:.4f}\nMAE:  {mae:.4f}\nR²:   {r2:.4f}'
         props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
         ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=11,
                 verticalalignment='top', bbox=props, family='monospace')
     
     # Formatting
     ax.set_xlabel('Time', fontsize=12)
-    ax.set_ylabel('Value', fontsize=12)
+    ax.set_ylabel('Value (Millions)', fontsize=12)
     ax.set_title(title, fontsize=14, fontweight='bold')
     ax.legend(loc='upper right', fontsize=11)
     ax.grid(True, alpha=0.3, linestyle='--')
@@ -122,10 +127,10 @@ def plot_forecast(data, actuals=None, target_col=None, dates=None, save_path=Non
     # Print metrics
     if rmse is not None:
         print("\n" + "="*50)
-        print("FORECAST PERFORMANCE")
+        print("FORECAST PERFORMANCE (Millions)")
         print("="*50)
-        print(f"RMSE:  {rmse/1e6:.6f} M")
-        print(f"MAE:   {mae/1e6:.6f} M")
+        print(f"RMSE:  {rmse:.6f}")
+        print(f"MAE:   {mae:.6f}")
         print(f"R²:    {r2:.6f}")
         print("="*50 + "\n")
     
@@ -168,32 +173,40 @@ def plot_multiple_forecasts(result_df, target_cols=None, save_path=None):
                 pred_valid = predictions[valid_mask]
                 actual_valid = actuals[valid_mask]
                 
-                rmse = np.sqrt(mean_squared_error(actual_valid, pred_valid))
-                mae = mean_absolute_error(actual_valid, pred_valid)
-                r2 = r2_score(actual_valid, pred_valid)
+                # Convert to millions for calculation
+                pred_valid_millions = pred_valid / 1e6
+                actual_valid_millions = actual_valid / 1e6
+                
+                rmse = np.sqrt(mean_squared_error(actual_valid_millions, pred_valid_millions))
+                mae = mean_absolute_error(actual_valid_millions, pred_valid_millions)
+                r2 = r2_score(actual_valid_millions, pred_valid_millions)
+                
+                # Convert to millions for plotting
+                predictions_millions = predictions / 1e6
+                actuals_millions = actuals / 1e6
                 
                 # Plot
-                ax.plot(dates, predictions, label='Forecast', color='#2E86DE', linewidth=2, alpha=0.8)
-                ax.plot(dates, actuals, label='Actual', color='#EE5A6F', linewidth=2, alpha=0.8)
-                ax.fill_between(dates, predictions, actuals, alpha=0.2, color='gray')
+                ax.plot(dates, predictions_millions, label='Forecast', color='#2E86DE', linewidth=2, alpha=0.8)
+                ax.plot(dates, actuals_millions, label='Actual', color='#EE5A6F', linewidth=2, alpha=0.8)
+                ax.fill_between(dates, predictions_millions, actuals_millions, alpha=0.2, color='gray')
                 
                 # Metrics text
-                rmse_millions = rmse / 1e6
-                mae_millions = mae / 1e6
-                textstr = f'RMSE: {rmse_millions:.4f}M  MAE: {mae_millions:.4f}M  R²: {r2:.4f}'
+                textstr = f'RMSE: {rmse:.4f}  MAE: {mae:.4f}  R²: {r2:.4f}'
                 ax.text(0.5, 0.98, textstr, transform=ax.transAxes, fontsize=10,
                        verticalalignment='top', ha='center', bbox=dict(boxstyle='round', 
                        facecolor='white', alpha=0.8))
             else:
                 # Plot without metrics if all NaN
-                ax.plot(dates, predictions, label='Forecast', color='#2E86DE', linewidth=2, alpha=0.8)
+                predictions_millions = predictions / 1e6
+                ax.plot(dates, predictions_millions, label='Forecast', color='#2E86DE', linewidth=2, alpha=0.8)
                 ax.text(0.5, 0.98, 'All values are NaN', transform=ax.transAxes, fontsize=10,
                        verticalalignment='top', ha='center', color='red')
         else:
-            ax.plot(dates, predictions, label='Forecast', color='#2E86DE', linewidth=2)
+            predictions_millions = predictions / 1e6
+            ax.plot(dates, predictions_millions, label='Forecast', color='#2E86DE', linewidth=2)
         
         # Formatting
-        ax.set_ylabel(target, fontsize=11)
+        ax.set_ylabel(f'{target} (Millions)', fontsize=11)
         ax.legend(loc='upper right')
         ax.grid(True, alpha=0.3, linestyle='--')
         
@@ -299,32 +312,34 @@ def plot_scatter(predictions, actuals, save_path=None):
     predictions = predictions[valid_mask]
     actuals = actuals[valid_mask]
     
-    # Calculate metrics
-    rmse = np.sqrt(mean_squared_error(actuals, predictions))
-    mae = mean_absolute_error(actuals, predictions)
-    r2 = r2_score(actuals, predictions)
+    # Convert to millions for calculation and plotting
+    predictions_millions = predictions / 1e6
+    actuals_millions = actuals / 1e6
+    
+    # Calculate metrics in millions scale
+    rmse = np.sqrt(mean_squared_error(actuals_millions, predictions_millions))
+    mae = mean_absolute_error(actuals_millions, predictions_millions)
+    r2 = r2_score(actuals_millions, predictions_millions)
     
     fig, ax = plt.subplots(figsize=(8, 8))
     
     # Scatter plot
-    ax.scatter(actuals, predictions, alpha=0.5, s=30, color='#2E86DE', edgecolors='black', linewidth=0.5)
+    ax.scatter(actuals_millions, predictions_millions, alpha=0.5, s=30, color='#2E86DE', edgecolors='black', linewidth=0.5)
     
     # Perfect prediction line
-    min_val = min(actuals.min(), predictions.min())
-    max_val = max(actuals.max(), predictions.max())
+    min_val = min(actuals_millions.min(), predictions_millions.min())
+    max_val = max(actuals_millions.max(), predictions_millions.max())
     ax.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect Forecast')
     
     # Metrics text
-    rmse_millions = rmse / 1e6
-    mae_millions = mae / 1e6
-    textstr = f'RMSE: {rmse_millions:.6f}M\nMAE:  {mae_millions:.6f}M\nR²:   {r2:.6f}'
+    textstr = f'RMSE: {rmse:.6f}\nMAE:  {mae:.6f}\nR²:   {r2:.6f}'
     props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
     ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=11,
             verticalalignment='top', bbox=props, family='monospace')
     
     # Formatting
-    ax.set_xlabel('Actual Values', fontsize=12)
-    ax.set_ylabel('Predicted Values', fontsize=12)
+    ax.set_xlabel('Actual Values (Millions)', fontsize=12)
+    ax.set_ylabel('Predicted Values (Millions)', fontsize=12)
     ax.set_title('Forecast vs Actual Scatter Plot', fontsize=14, fontweight='bold')
     ax.legend(loc='lower right')
     ax.grid(True, alpha=0.3)
@@ -401,21 +416,25 @@ def create_full_report(result_df, target_col=None, save_dir=None):
     pred_valid = predictions[valid_mask]
     actual_valid = actuals[valid_mask]
     
-    rmse = np.sqrt(mean_squared_error(actual_valid, pred_valid))
-    mae = mean_absolute_error(actual_valid, pred_valid)
-    r2 = r2_score(actual_valid, pred_valid)
+    # Convert to millions for calculation
+    pred_valid_millions = pred_valid / 1e6
+    actual_valid_millions = actual_valid / 1e6
+    
+    rmse = np.sqrt(mean_squared_error(actual_valid_millions, pred_valid_millions))
+    mae = mean_absolute_error(actual_valid_millions, pred_valid_millions)
+    r2 = r2_score(actual_valid_millions, pred_valid_millions)
     
     print("\n" + "="*70)
-    print("FINAL PERFORMANCE SUMMARY")
+    print("FINAL PERFORMANCE SUMMARY (Millions)")
     print("="*70)
     print(f"Target:        {target_col}")
     print(f"Total Samples: {n_total}")
     print(f"Valid Samples: {n_valid} ({n_valid/n_total*100:.1f}%)")
-    print(f"RMSE:          {rmse/1e6:.6f} M")
-    print(f"MAE:           {mae/1e6:.6f} M")
+    print(f"RMSE:          {rmse:.6f}")
+    print(f"MAE:           {mae:.6f}")
     print(f"R²:            {r2:.6f}")
-    print(f"Mean Error:    {np.mean(actual_valid - pred_valid)/1e6:.6f} M")
-    print(f"Std Error:     {np.std(actual_valid - pred_valid)/1e6:.6f} M")
+    print(f"Mean Error:    {np.mean(actual_valid_millions - pred_valid_millions):.6f}")
+    print(f"Std Error:     {np.std(actual_valid_millions - pred_valid_millions):.6f}")
     print("="*70 + "\n")
 
 
