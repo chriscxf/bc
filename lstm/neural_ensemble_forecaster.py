@@ -902,8 +902,17 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test,
     # Expanding window prediction loop
     n_steps = len(X_full) - pred_start
     
+    if n_steps <= 0:
+        raise ValueError(f"pred_start ({pred_start}) >= len(X_full) ({len(X_full)}). No predictions to make!")
+    
     for i in range(n_steps):
         current_idx = pred_start + i
+        
+        # Bounds check
+        if current_idx >= len(X_numeric):
+            if verbose:
+                print(f"⚠️ Step {i+1}/{n_steps}: current_idx ({current_idx}) >= len(X_numeric) ({len(X_numeric)}), stopping")
+            break
         
         # Expanding training window: from start (0) to current_idx-1
         X_train = X_numeric.iloc[:current_idx]
@@ -913,20 +922,29 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test,
         X_test = X_numeric.iloc[current_idx:current_idx+1]
         Y_test = Y_full.iloc[current_idx:current_idx+1]
         
+        # Check if test set is empty
+        if len(X_test) == 0 or len(Y_test) == 0:
+            if verbose:
+                print(f"⚠️ Step {i+1}/{n_steps} (idx={current_idx}): Empty test set, skipping")
+            continue
+        
+        # Get test date safely
+        test_date = X_test.index[0] if len(X_test.index) > 0 else f"idx_{current_idx}"
+        
         # Check for NaN in test features
         if X_test.isna().any().any():
             if verbose and i < 10:
-                print(f"⚠️ Step {i+1}/{n_steps} (idx={current_idx}): Skipping due to NaN in features")
+                print(f"⚠️ Step {i+1}/{n_steps} (idx={current_idx}, {test_date}): Skipping due to NaN in features")
             predictions_list.append([np.nan] * len(target_list))
             actuals_list.append(Y_test[target_list].values[0])
-            dates_list.append(X_test.index[0])
+            dates_list.append(test_date)
             continue
         
         # Retrain model every retrain_freq steps
         if i % retrain_freq == 0 or forecaster is None:
             if verbose:
                 print(f"\n[Step {i+1}/{n_steps}] Training on {len(X_train)} samples (index 0 to {current_idx-1})")
-                print(f"  Predicting for index {current_idx} ({X_test.index[0]})")
+                print(f"  Predicting for index {current_idx} ({test_date})")
             
             # Initialize new forecaster
             forecaster = NeuralEnsembleForecaster(
@@ -955,7 +973,7 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test,
                     importance = forecaster.get_feature_importance(top_k=10)
                     feature_importance_history.append({
                         'step': i,
-                        'date': X_test.index[0],
+                        'date': test_date,
                         'importance': importance
                     })
                     
@@ -963,28 +981,48 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test,
                 print(f"⚠️ Training failed at step {i+1}: {e}")
                 predictions_list.append([np.nan] * len(target_list))
                 actuals_list.append(Y_test[target_list].values[0])
-                dates_list.append(X_test.index[0])
+                dates_list.append(test_date)
                 continue
         
         # Make prediction for current time point
         try:
             pred = forecaster.predict(X_test.values)
-            predictions_list.append(pred[0])
+            # Handle both 1D and 2D prediction arrays
+            if pred.ndim == 2:
+                predictions_list.append(pred[0])  # Shape: (1, n_targets) -> (n_targets,)
+            else:
+                predictions_list.append(pred)  # Shape: (n_targets,)
         except Exception as e:
             if verbose and i < 10:
                 print(f"⚠️ Prediction failed at step {i+1}: {e}")
             predictions_list.append([np.nan] * len(target_list))
         
         actuals_list.append(Y_test[target_list].values[0])
-        dates_list.append(X_test.index[0])
+        dates_list.append(test_date)
         
         # Progress indicator
         if verbose and (i + 1) % 10 == 0:
             print(f"  Completed {i+1}/{n_steps} predictions...")
     
     # Create result DataFrame
+    if len(predictions_list) == 0:
+        raise ValueError("No predictions were made! Check your data and pred_start parameter.")
+    
     predictions_array = np.array(predictions_list)
     actuals_array = np.array(actuals_list)
+    
+    # Handle shape - ensure 2D array
+    if predictions_array.ndim == 1:
+        predictions_array = predictions_array.reshape(-1, 1)
+    if actuals_array.ndim == 1:
+        actuals_array = actuals_array.reshape(-1, 1)
+    
+    # Ensure we have the right number of columns
+    if predictions_array.shape[1] != len(target_list):
+        if predictions_array.shape[1] == 1 and len(target_list) == 1:
+            pass  # OK, single target
+        else:
+            raise ValueError(f"Shape mismatch: predictions have {predictions_array.shape[1]} columns but target_list has {len(target_list)} items")
     
     result_df = pd.DataFrame(
         predictions_array,
@@ -994,7 +1032,10 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test,
     
     # Add actual values
     for j, col in enumerate(target_list):
-        result_df[f"actual_{col}"] = actuals_array[:, j]
+        if actuals_array.shape[1] > j:
+            result_df[f"actual_{col}"] = actuals_array[:, j]
+        else:
+            result_df[f"actual_{col}"] = actuals_array[:, 0]  # Fallback for single column
     
     print("\n" + "="*80)
     print("FORECASTING COMPLETE")
