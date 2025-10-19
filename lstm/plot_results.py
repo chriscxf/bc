@@ -438,6 +438,294 @@ def create_full_report(result_df, target_col=None, save_dir=None):
     print("="*70 + "\n")
 
 
+def save_forecast_results(result_df, target_col=None, save_dir='results', prefix='forecast'):
+    """
+    Save complete forecasting results to files
+    
+    Saves:
+    1. CSV with predictions, actuals, and dates
+    2. CSV with evaluation metrics
+    3. Text summary report
+    
+    Args:
+        result_df: DataFrame from run_forecasting with predictions and actuals
+        target_col: Target column name (auto-detected if None)
+        save_dir: Directory to save results (created if doesn't exist)
+        prefix: Prefix for output filenames
+    
+    Returns:
+        dict with paths to saved files
+    """
+    import os
+    from datetime import datetime
+    
+    # Create save directory
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Auto-detect target column
+    if target_col is None:
+        target_col = [c for c in result_df.columns if not c.startswith('actual_')][0]
+    
+    actual_col = f'actual_{target_col}'
+    
+    # Prepare data
+    predictions = result_df[target_col].values
+    actuals = result_df[actual_col].values if actual_col in result_df.columns else None
+    dates = result_df.index
+    
+    # Remove NaN for metrics
+    if actuals is not None:
+        valid_mask = ~(np.isnan(predictions) | np.isnan(actuals))
+        pred_valid = predictions[valid_mask]
+        actual_valid = actuals[valid_mask]
+        n_valid = np.sum(valid_mask)
+        n_total = len(predictions)
+    else:
+        n_valid = 0
+        n_total = len(predictions)
+    
+    # Calculate metrics (in millions)
+    if n_valid > 0:
+        pred_millions = pred_valid / 1e6
+        actual_millions = actual_valid / 1e6
+        
+        mse = mean_squared_error(actual_millions, pred_millions)
+        rmse = np.sqrt(mse)
+        mae = mean_absolute_error(actual_millions, pred_millions)
+        r2 = r2_score(actual_millions, pred_millions)
+        
+        # Additional metrics
+        mape = np.mean(np.abs((actual_valid - pred_valid) / actual_valid)) * 100
+        correlation = np.corrcoef(actual_valid, pred_valid)[0, 1]
+    else:
+        mse = rmse = mae = r2 = mape = correlation = np.nan
+    
+    # Timestamp for filenames
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # ========================================================================
+    # 1. SAVE PREDICTIONS CSV
+    # ========================================================================
+    predictions_file = os.path.join(save_dir, f'{prefix}_predictions_{timestamp}.csv')
+    
+    # Create comprehensive predictions DataFrame
+    save_df = pd.DataFrame({
+        'date': dates,
+        'predicted': predictions,
+        'actual': actuals if actuals is not None else np.nan,
+        'error': (predictions - actuals) if actuals is not None else np.nan,
+        'abs_error': np.abs(predictions - actuals) if actuals is not None else np.nan,
+        'pct_error': ((predictions - actuals) / actuals * 100) if actuals is not None else np.nan
+    })
+    
+    save_df.to_csv(predictions_file, index=False)
+    print(f"✓ Predictions saved to: {predictions_file}")
+    
+    # ========================================================================
+    # 2. SAVE METRICS CSV
+    # ========================================================================
+    metrics_file = os.path.join(save_dir, f'{prefix}_metrics_{timestamp}.csv')
+    
+    metrics_df = pd.DataFrame({
+        'Metric': ['MSE', 'RMSE', 'MAE', 'R²', 'MAPE', 'Correlation', 
+                   'Total Samples', 'Valid Samples', 'NaN Samples'],
+        'Value': [mse, rmse, mae, r2, mape, correlation, 
+                  n_total, n_valid, n_total - n_valid],
+        'Unit': ['M²', 'M', 'M', '', '%', '', '', '', '']
+    })
+    
+    metrics_df.to_csv(metrics_file, index=False)
+    print(f"✓ Metrics saved to: {metrics_file}")
+    
+    # ========================================================================
+    # 3. SAVE TEXT SUMMARY
+    # ========================================================================
+    summary_file = os.path.join(save_dir, f'{prefix}_summary_{timestamp}.txt')
+    
+    with open(summary_file, 'w') as f:
+        f.write("="*80 + "\n")
+        f.write("FORECAST RESULTS SUMMARY\n")
+        f.write("="*80 + "\n\n")
+        
+        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Target: {target_col}\n")
+        f.write(f"Prediction period: {dates[0]} to {dates[-1]}\n")
+        f.write(f"Total predictions: {n_total}\n\n")
+        
+        f.write("-"*80 + "\n")
+        f.write("PERFORMANCE METRICS (Millions)\n")
+        f.write("-"*80 + "\n\n")
+        
+        if n_valid > 0:
+            f.write(f"Valid samples:   {n_valid} / {n_total} ({n_valid/n_total*100:.1f}%)\n")
+            f.write(f"NaN samples:     {n_total - n_valid} / {n_total} ({(n_total-n_valid)/n_total*100:.1f}%)\n\n")
+            
+            f.write(f"MSE:             {mse:.6f} M²\n")
+            f.write(f"RMSE:            {rmse:.6f} M\n")
+            f.write(f"MAE:             {mae:.6f} M\n")
+            f.write(f"R²:              {r2:.6f}\n")
+            f.write(f"MAPE:            {mape:.2f}%\n")
+            f.write(f"Correlation:     {correlation:.6f}\n\n")
+            
+            f.write("-"*80 + "\n")
+            f.write("PREDICTION STATISTICS (Original Scale)\n")
+            f.write("-"*80 + "\n\n")
+            
+            f.write(f"Predicted Mean:  {pred_valid.mean():.2f}\n")
+            f.write(f"Predicted Std:   {pred_valid.std():.2f}\n")
+            f.write(f"Predicted Min:   {pred_valid.min():.2f}\n")
+            f.write(f"Predicted Max:   {pred_valid.max():.2f}\n\n")
+            
+            f.write(f"Actual Mean:     {actual_valid.mean():.2f}\n")
+            f.write(f"Actual Std:      {actual_valid.std():.2f}\n")
+            f.write(f"Actual Min:      {actual_valid.min():.2f}\n")
+            f.write(f"Actual Max:      {actual_valid.max():.2f}\n\n")
+            
+            f.write("-"*80 + "\n")
+            f.write("ERROR STATISTICS\n")
+            f.write("-"*80 + "\n\n")
+            
+            errors = pred_valid - actual_valid
+            f.write(f"Error Mean:      {errors.mean():.2f}\n")
+            f.write(f"Error Std:       {errors.std():.2f}\n")
+            f.write(f"Error Min:       {errors.min():.2f}\n")
+            f.write(f"Error Max:       {errors.max():.2f}\n")
+            f.write(f"Abs Error Mean:  {np.abs(errors).mean():.2f}\n\n")
+            
+        else:
+            f.write(f"⚠️ WARNING: All {n_total} predictions are NaN!\n")
+            f.write(f"Cannot calculate metrics.\n\n")
+        
+        f.write("-"*80 + "\n")
+        f.write("SAMPLE PREDICTIONS (First 10)\n")
+        f.write("-"*80 + "\n\n")
+        
+        f.write(f"{'Date':<20} {'Predicted':>15} {'Actual':>15} {'Error':>15}\n")
+        f.write("-"*70 + "\n")
+        
+        for i in range(min(10, len(save_df))):
+            row = save_df.iloc[i]
+            f.write(f"{str(row['date']):<20} {row['predicted']:>15.2f} {row['actual']:>15.2f} {row['error']:>15.2f}\n")
+        
+        f.write("\n" + "="*80 + "\n")
+    
+    print(f"✓ Summary saved to: {summary_file}")
+    
+    # ========================================================================
+    # 4. PRINT SUMMARY TO CONSOLE
+    # ========================================================================
+    print("\n" + "="*80)
+    print("FORECAST RESULTS SUMMARY")
+    print("="*80)
+    print(f"Target: {target_col}")
+    print(f"Period: {dates[0]} to {dates[-1]}")
+    print(f"Total predictions: {n_total}")
+    
+    if n_valid > 0:
+        print(f"\nPerformance Metrics (Millions):")
+        print(f"  RMSE:        {rmse:.6f}")
+        print(f"  MAE:         {mae:.6f}")
+        print(f"  R²:          {r2:.6f}")
+        print(f"  MAPE:        {mape:.2f}%")
+        print(f"  Correlation: {correlation:.6f}")
+        print(f"\nValid samples: {n_valid} / {n_total} ({n_valid/n_total*100:.1f}%)")
+    else:
+        print(f"\n⚠️ WARNING: All predictions are NaN!")
+    
+    print("="*80 + "\n")
+    
+    # Return file paths
+    return {
+        'predictions': predictions_file,
+        'metrics': metrics_file,
+        'summary': summary_file,
+        'directory': save_dir
+    }
+
+
+# Backward compatibility wrapper
+def create_full_report(y_true=None, y_pred=None, timestamps=None, target_col='return',
+                      result_df=None, save_dir='results', show_plots=False):
+    """
+    Create comprehensive report with all plots and saved results
+    
+    Args:
+        y_true: Actual values (or use result_df)
+        y_pred: Predicted values (or use result_df)
+        timestamps: Dates/indices (or use result_df)
+        target_col: Target column name
+        result_df: DataFrame from run_forecasting (alternative to y_true/y_pred)
+        save_dir: Directory to save results
+        show_plots: Whether to display plots
+    
+    Returns:
+        dict with paths to all saved files
+    """
+    import os
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Handle input formats
+    if result_df is not None:
+        # Use DataFrame
+        saved_files = save_forecast_results(result_df, target_col=target_col, 
+                                           save_dir=save_dir, prefix='forecast')
+        
+        # Extract arrays for plotting
+        if target_col is None:
+            target_col = [c for c in result_df.columns if not c.startswith('actual_')][0]
+        
+        y_pred = result_df[target_col].values
+        actual_col = f'actual_{target_col}'
+        y_true = result_df[actual_col].values if actual_col in result_df.columns else None
+        timestamps = result_df.index
+        
+    else:
+        # Create DataFrame from arrays
+        result_df = pd.DataFrame({
+            target_col: y_pred,
+            f'actual_{target_col}': y_true,
+        }, index=timestamps)
+        
+        saved_files = save_forecast_results(result_df, target_col=target_col,
+                                           save_dir=save_dir, prefix='forecast')
+    
+    # Create plots
+    plot_files = []
+    
+    # 1. Forecast plot
+    fig, ax = plot_forecast(result_df, target_col=target_col, 
+                           save_path=os.path.join(save_dir, 'forecast_plot.png'))
+    plot_files.append(os.path.join(save_dir, 'forecast_plot.png'))
+    if not show_plots:
+        plt.close(fig)
+    
+    # 2. Scatter plot (if valid predictions exist)
+    valid_mask = ~(np.isnan(y_pred) | (np.isnan(y_true) if y_true is not None else False))
+    if np.sum(valid_mask) > 0 and y_true is not None:
+        fig, ax = plot_scatter(y_pred[valid_mask], y_true[valid_mask],
+                              save_path=os.path.join(save_dir, 'scatter_plot.png'))
+        plot_files.append(os.path.join(save_dir, 'scatter_plot.png'))
+        if not show_plots:
+            plt.close(fig)
+        
+        # 3. Error distribution
+        fig, ax = plot_error_distribution(y_pred[valid_mask], y_true[valid_mask],
+                                          save_path=os.path.join(save_dir, 'error_distribution.png'))
+        plot_files.append(os.path.join(save_dir, 'error_distribution.png'))
+        if not show_plots:
+            plt.close(fig)
+    
+    saved_files['plots'] = plot_files
+    
+    print(f"\n✓ Complete report saved to: {save_dir}/")
+    print(f"  - Predictions CSV")
+    print(f"  - Metrics CSV")
+    print(f"  - Text summary")
+    print(f"  - {len(plot_files)} plots")
+    
+    return saved_files
+
+
 if __name__ == "__main__":
     print("\n" + "="*70)
     print("FORECAST PLOTTING EXAMPLES")
