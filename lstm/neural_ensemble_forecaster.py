@@ -109,7 +109,11 @@ class FeatureAutoencoder(nn.Module):
     
     def encode(self, x):
         """Extract compressed features"""
+        self.eval()  # Critical: Set to eval mode to disable BatchNorm training behavior
         with torch.no_grad():
+            # Handle single sample case (BatchNorm requires eval mode for single samples)
+            if x.dim() == 1:
+                x = x.unsqueeze(0)  # Add batch dimension
             return self.encoder(x)
 
 
@@ -625,6 +629,7 @@ class NeuralEnsembleForecaster:
                     epochs=self.autoencoder_epochs,
                     device=self.device
                 )
+                self.autoencoder.eval()  # Set to eval mode before encoding
                 X_tensor = torch.FloatTensor(X_scaled).to(self.device)
                 X_neural = self.autoencoder.encode(X_tensor).cpu().numpy()
                 self.neural_feature_names_ = [f"neural_{i}" for i in range(self.n_compressed_features)]
@@ -661,6 +666,7 @@ class NeuralEnsembleForecaster:
             X_scaled = self.scaler.transform(X)
             
             if self.use_neural_features:
+                self.autoencoder.eval()  # Ensure eval mode for BatchNorm
                 X_tensor = torch.FloatTensor(X_scaled).to(self.device)
                 X_neural = self.autoencoder.encode(X_tensor).cpu().numpy()
             else:
