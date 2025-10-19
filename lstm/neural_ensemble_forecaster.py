@@ -889,29 +889,32 @@ class NeuralEnsembleForecaster:
 # CONVENIENCE FUNCTIONS (Same interface as lstm_forecaster.py)
 # ============================================================================
 
-def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test, 
+def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test=None, 
                    retrain_freq=1, use_ensemble=True, verbose=True):
     """
     EXPANDING WINDOW FORECASTING - Trains a new model for each prediction date
     
-    For each prediction at time t:
-    - Training data: 1 to t-1 (expanding window)
-    - Prediction: time t
+    For each prediction at time t (where t >= pred_start):
+    - Training data: indices [0, t-1] (expanding window)
+    - Prediction: index t
+    - Actual value: Y_full[t] (used for evaluation)
     
     This is TRUE walk-forward validation for time series.
+    No separate test dataset needed - predictions are made on-the-fly.
     
     Args:
-        X_full: Full feature DataFrame
-        Y_full: Full target DataFrame
-        pred_start: Index to start predictions
+        X_full: Full feature DataFrame with ALL data (train + future points)
+        Y_full: Full target DataFrame with ALL data (train + future points)
+        pred_start: Index to start predictions (train on [0:pred_start], then predict pred_start, pred_start+1, ...)
         target_list: List of target column names
-        X_to_test: Features for prediction period (for compatibility, but uses X_full internally)
+        X_to_test: DEPRECATED (ignored, kept for compatibility). Uses X_full internally.
         retrain_freq: Retrain every N steps (1 = every step, 5 = every 5 steps for speed)
         use_ensemble: If True, use all 4 models. If False, use only XGBoost (FASTER)
         verbose: Print progress
     
     Returns:
-        DataFrame with predictions and actuals
+        DataFrame with columns: [target_name, 'actual_{target_name}', ...] indexed by dates
+        Ready for plot_results.py
     """
     print("\n" + "="*80)
     print("EXPANDING WINDOW FORECASTING (TRAIN ON 1:t-1, PREDICT t)")
@@ -941,11 +944,18 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test,
         print(f"   Training on only {pred_start} samples may not be enough.")
         print(f"   Recommend: pred_start >= 250 for stable training")
     
-    print(f"Prediction start index: {pred_start}")
-    print(f"Total prediction steps: {len(X_full) - pred_start}")
-    print(f"Retrain frequency: Every {retrain_freq} step(s)")
-    print(f"Model type: {'Ensemble (4 models)' if use_ensemble else 'Single XGBoost'}")
-    print(f"Initial training samples: {pred_start}")
+    print(f"\nData Split:")
+    print(f"  Total samples: {len(X_full)}")
+    print(f"  Initial training: indices 0 to {pred_start-1} ({pred_start} samples)")
+    print(f"  Prediction period: indices {pred_start} to {len(X_full)-1} ({len(X_full) - pred_start} points)")
+    print(f"\nForecasting Mode:")
+    print(f"  For each t in [{pred_start}, {len(X_full)-1}]:")
+    print(f"    - Train on: [0, t-1]")
+    print(f"    - Predict: t")
+    print(f"    - Compare to: Y_full[t] (actual)")
+    print(f"\nConfiguration:")
+    print(f"  Retrain frequency: Every {retrain_freq} step(s)")
+    print(f"  Model type: {'Ensemble (4 models)' if use_ensemble else 'Single XGBoost'}")
     print("="*80)
     
     # Select numeric columns
@@ -1280,30 +1290,40 @@ if __name__ == "__main__":
     plt.show()
     """)
     
-    print("\n3. EXPANDING WINDOW (Train on 1:t-1, Predict t):")
+    print("\n3. EXPANDING WINDOW FORECASTING (No Separate Test Set):")
     print("""
     from neural_ensemble_forecaster import run_forecasting
     
-    # Retrain every step (slowest, most accurate)
+    # You have 1500 samples, want to start predictions from index 1000
+    # Model will use [0:1000] for first training, then:
+    #   t=1000: train on [0:999], predict 1000
+    #   t=1001: train on [0:1000], predict 1001
+    #   t=1002: train on [0:1001], predict 1002
+    #   ...
+    
+    # USAGE (NO separate test dataset needed!)
     result_df = run_forecasting(
-        X_full=X_full,
-        Y_full=Y_full,
-        pred_start=1000,
-        target_list=['target_col'],
-        X_to_test=X_full.iloc[1000:],
-        retrain_freq=1,  # Train new model for EACH prediction
+        X_full=X_full,           # ALL data (1500 samples)
+        Y_full=Y_full,           # ALL targets (1500 samples)
+        pred_start=1000,         # Start predictions at index 1000
+        target_list=['return'],  # Target column name
+        retrain_freq=5,          # Retrain every 5 steps
+        use_ensemble=True,       # Use all 4 models (or False for single XGBoost)
         verbose=True
     )
     
-    # Retrain every 5 steps (faster, still adaptive)
-    result_df = run_forecasting(
-        X_full=X_full,
-        Y_full=Y_full,
-        pred_start=1000,
-        target_list=['target_col'],
-        X_to_test=X_full.iloc[1000:],
-        retrain_freq=5,  # Train new model every 5 predictions
-        verbose=True
+    # result_df contains:
+    #   - 'return': predictions for indices 1000-1499
+    #   - 'actual_return': actual values from Y_full for comparison
+    #   - Index: dates/indices from X_full
+    
+    # Ready to plot!
+    from plot_results import plot_forecast
+    plot_forecast(
+        y_true=result_df['actual_return'],
+        y_pred=result_df['return'],
+        timestamps=result_df.index,
+        save_path='forecast_results.png'
     )
     """)
     
