@@ -95,7 +95,10 @@ def plot_forecast(data, actuals=None, target_col=None, dates=None, save_path=Non
     
     # Add metrics text box
     if rmse is not None:
-        textstr = f'RMSE: {rmse:.4f}\nMAE:  {mae:.4f}\nR²:   {r2:.4f}'
+        # Convert to millions for display
+        rmse_millions = rmse / 1e6
+        mae_millions = mae / 1e6
+        textstr = f'RMSE: {rmse_millions:.4f}M\nMAE:  {mae_millions:.4f}M\nR²:   {r2:.4f}'
         props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
         ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=11,
                 verticalalignment='top', bbox=props, family='monospace')
@@ -121,8 +124,8 @@ def plot_forecast(data, actuals=None, target_col=None, dates=None, save_path=Non
         print("\n" + "="*50)
         print("FORECAST PERFORMANCE")
         print("="*50)
-        print(f"RMSE:  {rmse:.6f}")
-        print(f"MAE:   {mae:.6f}")
+        print(f"RMSE:  {rmse/1e6:.6f} M")
+        print(f"MAE:   {mae/1e6:.6f} M")
         print(f"R²:    {r2:.6f}")
         print("="*50 + "\n")
     
@@ -175,7 +178,9 @@ def plot_multiple_forecasts(result_df, target_cols=None, save_path=None):
                 ax.fill_between(dates, predictions, actuals, alpha=0.2, color='gray')
                 
                 # Metrics text
-                textstr = f'RMSE: {rmse:.4f}  MAE: {mae:.4f}  R²: {r2:.4f}'
+                rmse_millions = rmse / 1e6
+                mae_millions = mae / 1e6
+                textstr = f'RMSE: {rmse_millions:.4f}M  MAE: {mae_millions:.4f}M  R²: {r2:.4f}'
                 ax.text(0.5, 0.98, textstr, transform=ax.transAxes, fontsize=10,
                        verticalalignment='top', ha='center', bbox=dict(boxstyle='round', 
                        facecolor='white', alpha=0.8))
@@ -310,7 +315,9 @@ def plot_scatter(predictions, actuals, save_path=None):
     ax.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect Forecast')
     
     # Metrics text
-    textstr = f'RMSE: {rmse:.6f}\nMAE:  {mae:.6f}\nR²:   {r2:.6f}'
+    rmse_millions = rmse / 1e6
+    mae_millions = mae / 1e6
+    textstr = f'RMSE: {rmse_millions:.6f}M\nMAE:  {mae_millions:.6f}M\nR²:   {r2:.6f}'
     props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
     ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=11,
             verticalalignment='top', bbox=props, family='monospace')
@@ -401,14 +408,14 @@ def create_full_report(result_df, target_col=None, save_dir=None):
     print("\n" + "="*70)
     print("FINAL PERFORMANCE SUMMARY")
     print("="*70)
-    print(f"Target:      {target_col}")
+    print(f"Target:        {target_col}")
     print(f"Total Samples: {n_total}")
     print(f"Valid Samples: {n_valid} ({n_valid/n_total*100:.1f}%)")
-    print(f"RMSE:        {rmse:.6f}")
-    print(f"MAE:         {mae:.6f}")
-    print(f"R²:          {r2:.6f}")
-    print(f"Mean Error:  {np.mean(actual_valid - pred_valid):.6f}")
-    print(f"Std Error:   {np.std(actual_valid - pred_valid):.6f}")
+    print(f"RMSE:          {rmse/1e6:.6f} M")
+    print(f"MAE:           {mae/1e6:.6f} M")
+    print(f"R²:            {r2:.6f}")
+    print(f"Mean Error:    {np.mean(actual_valid - pred_valid)/1e6:.6f} M")
+    print(f"Std Error:     {np.std(actual_valid - pred_valid)/1e6:.6f} M")
     print("="*70 + "\n")
 
 
