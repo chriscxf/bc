@@ -916,6 +916,31 @@ def run_forecasting(X_full, Y_full, pred_start, target_list, X_to_test,
     print("\n" + "="*80)
     print("EXPANDING WINDOW FORECASTING (TRAIN ON 1:t-1, PREDICT t)")
     print("="*80)
+    
+    # VALIDATION: Check pred_start
+    if pred_start < 0:
+        raise ValueError(
+            f"❌ ERROR: pred_start ({pred_start}) is NEGATIVE!\n\n"
+            f"You have {len(X_full)} samples total.\n"
+            f"To predict the last 100 samples:\n"
+            f"  ✅ CORRECT: pred_start = {len(X_full) - 100}  (train on first {len(X_full) - 100}, predict last 100)\n"
+            f"  ❌ WRONG:   pred_start = -100\n\n"
+            f"Usage:\n"
+            f"  pred_start = len(X_full) - 100  # For last 100 points\n"
+            f"  X_to_test = X_full.iloc[pred_start:, :]  # NOT iloc[-100:, :]"
+        )
+    
+    if pred_start >= len(X_full):
+        raise ValueError(
+            f"❌ ERROR: pred_start ({pred_start}) >= len(X_full) ({len(X_full)})!\n"
+            f"pred_start must be less than the total number of samples."
+        )
+    
+    if pred_start < 50:
+        print(f"⚠️  WARNING: pred_start ({pred_start}) is very small!")
+        print(f"   Training on only {pred_start} samples may not be enough.")
+        print(f"   Recommend: pred_start >= 250 for stable training")
+    
     print(f"Prediction start index: {pred_start}")
     print(f"Total prediction steps: {len(X_full) - pred_start}")
     print(f"Retrain frequency: Every {retrain_freq} step(s)")
