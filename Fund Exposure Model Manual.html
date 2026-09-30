@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fund Exposure Model Manual</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: single reading column (~72ch) of numbered pipeline stages, each with a fixed Purpose / Procedure / Output / Gate structure; reference tables and code in scrollable panels. */
+:root{
+  --paper:#f6f8f9; --panel:#ffffff; --ink:#16212b; --muted:#566573; --rule:#d7dee4;
+  --accent:#0d6468; --accent-soft:#e1efef; --warn:#8a5a00; --warn-soft:#fbf1dc;
+  --code-bg:#eef2f5;
+  --f-display:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;
+  --f-body:"IBM Plex Sans",-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --paper:#11181e; --panel:#18222a; --ink:#e3e9ee; --muted:#9aa9b5; --rule:#2c3a45;
+  --accent:#5fc3bd; --accent-soft:#16312f; --warn:#e8b45a; --warn-soft:#2e2615;
+  --code-bg:#1d2931; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --paper:#11181e; --panel:#18222a; --ink:#e3e9ee; --muted:#9aa9b5; --rule:#2c3a45;
+  --accent:#5fc3bd; --accent-soft:#16312f; --warn:#e8b45a; --warn-soft:#2e2615;
+  --code-bg:#1d2931; color-scheme:dark}
+body{background:var(--paper);color:var(--ink);font-family:var(--f-body);font-size:16px;line-height:1.6}
+.wrap{max-width:780px;margin:0 auto;padding-inline:20px;padding-block:40px 80px}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;line-height:1.2;margin:0}
+h1{font-size:2.3rem;font-weight:700;letter-spacing:-.01em}
+h2{font-size:1.6rem;font-weight:600;display:flex;gap:.6rem;align-items:baseline}
+h2 .n{font-family:var(--f-mono);font-size:1rem;color:var(--accent);font-weight:500}
+h3{font-size:1.1rem;font-weight:600;margin-top:1.4rem}
+p,li{max-width:68ch}
+p{margin:.6rem 0}
+ul,ol{padding-left:1.3rem;margin:.5rem 0}
+li{margin:.25rem 0}
+a{color:var(--accent)}
+.eyebrow{font-family:var(--f-mono);font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:1.08rem;color:var(--muted);margin-top:.8rem}
+header{border-bottom:2px solid var(--ink);padding-bottom:1.4rem;display:grid;gap:.4rem}
+section{padding-block:2.2rem;border-bottom:1px solid var(--rule)}
+code{font-family:var(--f-mono);font-size:.88em;background:var(--code-bg);padding:.05em .3em;border-radius:3px}
+pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:6px;padding:14px 16px;overflow-x:auto;font-family:var(--f-mono);font-size:.82rem;line-height:1.5;margin:.8rem 0}
+pre code{background:none;padding:0}
+.formula{font-family:var(--f-mono);font-size:.9rem;background:var(--accent-soft);padding:10px 14px;border-radius:6px;margin:.7rem 0;overflow-x:auto;white-space:nowrap}
+.tbl{overflow-x:auto;margin:.8rem 0;border:1px solid var(--rule);border-radius:6px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:.9rem;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-family:var(--f-display);font-weight:600;font-size:.85rem;letter-spacing:.02em;background:var(--code-bg)}
+tr:last-child td{border-bottom:none}
+.card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:1rem 0}
+.gate{border:1px solid var(--rule);border-radius:6px;padding:12px 14px;background:var(--panel);min-width:0}
+.gate b{font-family:var(--f-display);display:block;margin-bottom:.2rem}
+.label{font-family:var(--f-mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);font-weight:500;margin-top:1.2rem;display:block}
+.note{border:1px solid var(--warn);background:var(--warn-soft);border-radius:6px;padding:10px 14px;margin:1rem 0}
+.note b{color:var(--warn)}
+.toc{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:4px 20px;padding:0;list-style:none;margin:1.2rem 0 0}
+.toc li{margin:0}
+.toc a{text-decoration:none;color:var(--ink);display:flex;gap:.6rem}
+.toc a span{font-family:var(--f-mono);color:var(--accent);min-width:1.6rem}
+.toc a:hover{color:var(--accent)}
+.pill{display:inline-block;font-family:var(--f-mono);font-size:.75rem;padding:1px 8px;border-radius:99px;border:1px solid currentColor}
+.p-good{color:var(--accent)} .p-warn{color:var(--warn)} .p-bad{color:var(--muted)}
+.check li{list-style:"☐  "}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+@media print{
+  :root{--paper:#fff;--panel:#fff;--ink:#16212b;--muted:#566573;--rule:#d7dee4;--accent:#0d6468;--accent-soft:#e1efef;--warn:#8a5a00;--warn-soft:#fbf1dc;--code-bg:#eef2f5;color-scheme:light}
+  .wrap{max-width:none;padding:0}
+  body{font-size:11pt}
+  section{break-inside:auto}
+  h2,h3{break-after:avoid}
+  pre,.tbl,.gate,.formula,.note{break-inside:avoid}
+  pre,.formula{white-space:pre-wrap;overflow:visible}
+  a{text-decoration:none}
+}
+@page{size:A4;margin:16mm 14mm}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <span class="eyebrow">Quant Research · Operating Manual · v1.0</span>
+  <h1>Fund Exposure Model Manual</h1>
+  <p class="lede">Returns-based attribution of hedge fund drivers from monthly fund returns (about 60 months each) and Bloomberg index data. The model runs two levels: five asset-class buckets first, then regional and style drill-downs. Follow the stages in order. Every stage ends with a gate that must pass before the next stage starts.</p>
+</header>
+
+<nav aria-label="Contents">
+<ol class="toc">
+  <li><a href="#s0"><span>00</span>Scope and principles</a></li>
+  <li><a href="#s1"><span>01</span>Data preparation</a></li>
+  <li><a href="#s2"><span>02</span>Index universe and tagging</a></li>
+  <li><a href="#s3"><span>03</span>Factor selection funnel</a></li>
+  <li><a href="#s4"><span>04</span>Factor library build</a></li>
+  <li><a href="#s5"><span>05</span>Fund diagnostics</a></li>
+  <li><a href="#s6"><span>06</span>Level 1: bucket model</a></li>
+  <li><a href="#s7"><span>07</span>Level 2: drill-down</a></li>
+  <li><a href="#s8"><span>08</span>Nonlinear extensions</a></li>
+  <li><a href="#s9"><span>09</span>Testing and validation</a></li>
+  <li><a href="#s10"><span>10</span>Classification and reporting</a></li>
+  <li><a href="#s11"><span>11</span>Monthly production run</a></li>
+  <li><a href="#s12"><span>12</span>Code layout and snippets</a></li>
+  <li><a href="#s13"><span>13</span>Default parameters</a></li>
+</ol>
+</nav>
+
+<section id="s0">
+<h2><span class="n">00</span>Scope and principles</h2>
+<p><b>Question answered:</b> which market factors explain each fund's monthly returns, how much of its variance each explains, and whether each exposure is statistically and economically real.</p>
+<p><b>What this is not:</b> a causal model or a return forecast. A "driver" here means a persistent, explainable co-movement with a tradable factor.</p>
+<span class="label">Design principles</span>
+<ul>
+  <li><b>Estimation risk is the binding constraint.</b> With about 60 observations, keep 5 to 8 parameters per fund at most.</li>
+  <li><b>Use long index history, short fund history.</b> Indices have 10 to 20+ years of data. Build and orthogonalize factors on that long window, and use the fund's 60 months only to estimate its betas.</li>
+  <li><b>Fixed core, selected extras.</b> The five bucket factors enter every fund regression, which makes funds comparable. Only drill-down factors are selected.</li>
+  <li><b>Selection happens inside validation.</b> Any factor selection is re-run within each walk-forward step. Otherwise out-of-sample statistics are biased upward.</li>
+  <li><b>Everything is additive.</b> Level 2 contributions sum exactly into their Level 1 bucket.</li>
+</ul>
+</section>
+
+<section id="s1">
+<h2><span class="n">01</span>Data preparation</h2>
+<span class="label">Purpose</span>
+<p>Produce one clean monthly panel of fund excess returns and one of index returns, aligned on month-end dates.</p>
+<span class="label">Procedure: fund returns</span>
+<ol>
+  <li>Store returns as decimals (0.012, not 1.2%), net of fees, one row per fund-month, dated at calendar month-end.</li>
+  <li>Record for each fund: base currency, strategy bucket (e.g. Equity L/S, Credit, Macro, CTA, Relative Value, Multi-Strategy), region focus, inception date, and data source.</li>
+  <li>Convert non-base-currency share classes to one reporting currency (USD, or the class the portfolio actually holds). Hedged classes: use hedged returns and treat FX exposure as near zero by construction.</li>
+  <li><b>Backfill bias:</b> if the database reports an addition date, drop the months before it, or flag them.</li>
+  <li><b>Gaps:</b> do not interpolate. A fund with a missing month is estimated on available months only. Funds with fewer than 48 valid months are reported but marked <span class="pill p-warn">low confidence</span>.</li>
+  <li><b>Outliers:</b> flag any month with |z| &gt; 4 versus the fund's own history and verify it against the source. Do not winsorize fund returns; the extreme months often carry the exposure information.</li>
+  <li>Compute excess return: <code>r_fund − r_f</code>, where <code>r_f</code> is the 1-month T-bill return (or the local cash rate for non-USD funds).</li>
+</ol>
+<span class="label">Procedure: index returns</span>
+<ol>
+  <li>Pull month-end levels of <b>total return</b> indices. Use price-return indices only when no total return version exists, and log the exception.</li>
+  <li>Compute simple returns: <code>R_t = P_t / P_(t−1) − 1</code>.</li>
+  <li>Level series (VIX, yields, spreads) are not returns. Convert them to first differences (<code>ΔVIX</code>, <code>Δyield</code>) and tag them as <code>type = level_change</code>.</li>
+  <li>Pull the longest history available, at least 120 months, and ideally from 2005 so that 2008 is included.</li>
+</ol>
+<div class="card-grid">
+  <div class="gate"><b>Output</b><code>fund_panel.parquet</code>, <code>index_panel.parquet</code>, <code>fund_meta.csv</code>, and a data-quality log.</div>
+  <div class="gate"><b>Gate</b>Every fund has a strategy bucket and currency. Every outlier has been verified. Dates align on month-end.</div>
+</div>
+</section>
+
+<section id="s2">
+<h2><span class="n">02</span>Index universe and tagging</h2>
+<span class="label">Purpose</span>
+<p>Turn "many Bloomberg indices" into a structured candidate list. Nothing enters a regression without a tag.</p>
+<span class="label">Procedure</span>
+<ol>
+  <li>Build <code>index_meta.csv</code> with one row per index and these columns:</li>
+</ol>
+<div class="tbl"><table>
+<tr><th>Column</th><th>Values / example</th></tr>
+<tr><td>ticker, name</td><td>As in Bloomberg</td></tr>
+<tr><td>bucket</td><td>Equity · Rates · Credit · Commodity · FX · Volatility · Style</td></tr>
+<tr><td>sub_class</td><td>Equity: region or sector. Credit: IG / HY / EM / Loans. Commodity: Energy / Metals / Ags.</td></tr>
+<tr><td>region</td><td>Global · US · Europe · UK · Japan · Asia ex-Japan · EM · China</td></tr>
+<tr><td>return_type</td><td>TR · PR · ER (excess return over duration-matched Treasuries) · level_change</td></tr>
+<tr><td>currency, hedged</td><td>USD, hedged / unhedged</td></tr>
+<tr><td>start_date, n_months</td><td>First valid month, count</td></tr>
+<tr><td>investable</td><td>Y / N (does a futures contract, ETF or swap track it?)</td></tr>
+</table></div>
+<ol start="2">
+  <li>Assign every index to exactly one bucket and one level:
+    <ul>
+      <li><b>Level 1 (core):</b> one broad global index per bucket.</li>
+      <li><b>Level 2 (drill-down):</b> regional and sub-class indices.</li>
+      <li><b>Level 3 (style or nonlinear):</b> size, value, momentum, quality, vol and trend-following indices.</li>
+    </ul>
+  </li>
+</ol>
+<div class="card-grid">
+  <div class="gate"><b>Output</b><code>index_meta.csv</code>, fully tagged.</div>
+  <div class="gate"><b>Gate</b>No untagged index. Each bucket has exactly one Level 1 index.</div>
+</div>
+</section>
+
+<section id="s3">
+<h2><span class="n">03</span>Factor selection funnel</h2>
+<span class="label">Purpose</span>
+<p>Reduce hundreds of indices to a small, non-redundant factor library, <b>without looking at fund returns</b>. This stage uses index data only, so it cannot overfit to the funds.</p>
+
+<h3>Filter A: Eligibility</h3>
+<ul>
+  <li>History covers the full fund window plus 24 months.</li>
+  <li>Total return or excess return type preferred (price-return only as a documented exception).</li>
+  <li>Investable = Y preferred. Non-investable indices are allowed only if no investable substitute exists.</li>
+  <li>Currency consistent with the reporting currency, or convertible.</li>
+</ul>
+
+<h3>Filter B: Redundancy clustering (within each bucket)</h3>
+<ol>
+  <li>Compute the correlation matrix of monthly returns over the long window (at least 120 months).</li>
+  <li>Run hierarchical clustering (average linkage) with distance <code>d = 1 − |ρ|</code>.</li>
+  <li>Cut the tree at <code>d = 0.10</code>, so indices correlated above 0.90 fall in the same cluster.</li>
+  <li>Keep one representative per cluster, in this priority order: broadest coverage, then investable, then longest history, then most commonly used by the desk.</li>
+</ol>
+<p>Example: S&amp;P 500, Russell 1000, MSCI USA and Nasdaq-100 usually collapse into one US equity representative. Keep Nasdaq separately only if a growth or tech factor is part of the plan, and then as a spread (see Stage 04).</p>
+
+<h3>Filter C: Level 1 assignment</h3>
+<div class="tbl"><table>
+<tr><th>Bucket</th><th>Level 1 factor definition</th><th>Notes</th></tr>
+<tr><td>Equity</td><td>Global equity TR (e.g. MSCI ACWI) minus r<sub>f</sub></td><td>Local or USD, consistent with funds</td></tr>
+<tr><td>Rates</td><td>Global Treasury TR, hedged to USD, minus r<sub>f</sub></td><td>Pure duration</td></tr>
+<tr><td>Credit</td><td>Global corporate <b>excess return</b> over duration-matched Treasuries</td><td>Already net of rates; do not subtract r<sub>f</sub></td></tr>
+<tr><td>Commodity</td><td>Broad commodity TR (e.g. BCOM TR) minus r<sub>f</sub></td><td>TR includes collateral yield</td></tr>
+<tr><td>FX</td><td>USD basket return (e.g. DXY or trade-weighted USD)</td><td>Sign: positive = USD appreciates</td></tr>
+</table></div>
+
+<h3>Filter D: Candidate budget</h3>
+<ul>
+  <li>Level 2: at most 4 to 5 candidates per bucket (for equity: US base, Europe, Japan, EM, and optionally China or Asia).</li>
+  <li>Level 3: at most 6 to 8 total (for example size, value, momentum, quality, ΔVIX, trend-following).</li>
+  <li><b>Total candidate pool: 25 or fewer.</b> More candidates means more false selections, whatever method you use.</li>
+</ul>
+<div class="card-grid">
+  <div class="gate"><b>Output</b><code>factor_spec.yaml</code>: the list of Level 1, Level 2 and Level 3 factors with construction rules.</div>
+  <div class="gate"><b>Gate</b>Within-bucket correlation of retained candidates is ≤ 0.90. Pool size is ≤ 25. The spec is signed off and frozen for the quarter.</div>
+</div>
+</section>
+
+<section id="s4">
+<h2><span class="n">04</span>Factor library build</h2>
+<span class="label">Purpose</span>
+<p>Turn the selected indices into clean, interpretable, low-collinearity factor return series.</p>
+<ol>
+  <li><b>Level 1:</b> compute excess returns as defined in Stage 03. Check the 5×5 correlation matrix. Equity and Credit are typically 0.6 to 0.7 correlated. This is acceptable because credit is measured as an excess return, but always report VIF in Stage 06.</li>
+  <li><b>Level 2 spreads:</b> for each regional index <code>j</code> in bucket <code>k</code>, compute
+    <div class="formula">S_j = R_j − R_global,k</div>
+    Drop one region per bucket as the base (usually the largest weight, e.g. US in equity), because the regional spreads are nearly linearly dependent on the global index.</li>
+  <li><b>Orthogonalize</b> each spread (and each Level 3 factor) against all five Level 1 factors, over the long window:
+    <div class="formula">S_j,t = a + Σ_k b_k · F_k,t + u_t   →   S̃_j,t = u_t</div>
+    Store the coefficients (<code>a</code>, <code>b</code>). In walk-forward testing, re-estimate them using only data up to the test date.</li>
+  <li><b>Level 3 style factors:</b> construct as long-short spreads (small minus large, value minus growth, momentum minus market) and orthogonalize the same way. ΔVIX enters as a monthly change, orthogonalized.</li>
+  <li><b>Trend-following:</b> use a published CTA or trend index return as the factor, orthogonalized. Use the Fung–Hsieh lookback straddle factors if you have them.</li>
+</ol>
+<div class="note"><b>Why orthogonalize:</b> Level 1 betas stay the same whether or not Level 2 factors are added, so the attribution is additive and reconciles across levels. Each Level 2 beta measures a tilt relative to the global exposure.</div>
+<div class="card-grid">
+  <div class="gate"><b>Output</b><code>factors_L1.parquet</code>, <code>factors_L23.parquet</code>, <code>ortho_coefs.parquet</code>.</div>
+  <div class="gate"><b>Gate</b>Correlation of each S̃ with every Level 1 factor is ≈ 0 (&lt; 0.05) over the long window. All VIFs are &lt; 5.</div>
+</div>
+</section>
+
+<section id="s5">
+<h2><span class="n">05</span>Fund diagnostics</h2>
+<span class="label">Purpose</span>
+<p>Check each fund's return series before modelling, and correct for return smoothing.</p>
+<ol>
+  <li>Compute n, annualized mean and volatility, skew, kurtosis, maximum drawdown, the first-order autocorrelation ρ<sub>1</sub>, and the Ljung–Box p-value at 3 lags.</li>
+  <li><b>Smoothing test:</b> if ρ<sub>1</sub> &gt; 0.20 and the Ljung–Box p &lt; 0.05, the fund is smoothed. This is common in credit, distressed and private-asset-heavy funds.</li>
+  <li><b>Unsmoothing (default: Geltner):</b>
+    <div class="formula">r*_t = (r_t − ρ₁ · r_(t−1)) / (1 − ρ₁)</div>
+    Run the model on both raw and unsmoothed returns. The unsmoothed run is primary. Report both.</li>
+  <li>Alternatively, fit Getmansky–Lo–Makarov MA(2) weights by MLE when the lag structure extends beyond one month.</li>
+</ol>
+<div class="card-grid">
+  <div class="gate"><b>Output</b><code>fund_diag.csv</code> with a smoothing flag and the series to use.</div>
+  <div class="gate"><b>Gate</b>Every fund has a decision: raw or unsmoothed.</div>
+</div>
+</section>
+
+<section id="s6">
+<h2><span class="n">06</span>Level 1: bucket model</h2>
+<span class="label">Purpose</span>
+<p>Estimate each fund's exposure to the five asset-class buckets and the share of its risk each explains.</p>
+
+<h3>6.1 Regression (fixed specification, all funds)</h3>
+<div class="formula">r_t = α + β_EQ·EQ_t + β_RT·RT_t + β_CR·CR_t + β_CM·CM_t + β_FX·FX_t + ε_t</div>
+<ul>
+  <li>OLS with Newey–West (HAC) standard errors, 3 lags.</li>
+  <li>Keep all five factors even if insignificant. This fixed specification keeps funds comparable. Report insignificant betas as "no material exposure."</li>
+  <li>Report R², adjusted R², α (annualized) with its t-stat, residual volatility, VIF for each factor, and the Durbin–Watson statistic.</li>
+</ul>
+
+<h3>6.2 Peer shrinkage (empirical Bayes)</h3>
+<p>Apply when a strategy bucket has at least 8 funds. For each factor k within the peer group:</p>
+<div class="formula">τ²_k = max( Var_cross(β̂_k) − mean(se²_k), 0 )</div>
+<div class="formula">w_i,k = τ²_k / (τ²_k + se²_i,k)     β^shrunk_i,k = w·β̂_i,k + (1 − w)·mean_peer(β̂_k)</div>
+<p>Noisy funds move toward the peer mean. Precisely estimated funds keep their own beta. Report shrunk betas as primary, and keep the raw OLS betas alongside.</p>
+
+<h3>6.3 Risk shares</h3>
+<p><b>Euler (covariance) contribution</b>, with Σ the factor covariance over the fund's window:</p>
+<div class="formula">C_k = β_k · (Σβ)_k       share_k = C_k / Var(r)       Σ_k share_k = R²</div>
+<p>A negative share means the bucket hedges the fund's other exposures. <b>Shapley R²</b> is the order-independent alternative: the average marginal R² of bucket k across all 32 subset regressions. Use Shapley for the headline chart and Euler for the risk report.</p>
+
+<h3>6.4 Confidence intervals</h3>
+<p>Run a moving-block bootstrap (block length 6, 1,000 draws) and re-estimate the betas and shares each draw. Report 90% intervals. With 60 months, expect shares to be about ±10 percentage points wide.</p>
+<div class="card-grid">
+  <div class="gate"><b>Output</b>Per fund: betas (raw and shrunk), t-stats, shares with confidence intervals, α, R², VIF.</div>
+  <div class="gate"><b>Gate</b>VIF &lt; 5 for all factors. Residual ρ<sub>1</sub> &lt; 0.2 (if not, revisit Stage 05).</div>
+</div>
+</section>
+
+<section id="s7">
+<h2><span class="n">07</span>Level 2: drill-down</h2>
+<span class="label">Purpose</span>
+<p>For buckets that matter, identify which regions or sub-classes drive the exposure.</p>
+
+<h3>7.1 Trigger</h3>
+<p>Drill into bucket k only if its Shapley share is ≥ 10% <b>and</b> β<sub>k</sub> is significant (|t| ≥ 2). Otherwise report the bucket as "global only."</p>
+
+<h3>7.2 Selection: stability selection</h3>
+<ol>
+  <li>Candidates: the orthogonalized spreads S̃ belonging to the triggered buckets.</li>
+  <li>Partial out the five Level 1 factors from both the fund return and the candidates (Frisch–Waugh), so the core factors stay unpenalized.</li>
+  <li>Standardize the candidates. Fit a Lasso with BIC-chosen penalty (<code>LassoLarsIC</code>).</li>
+  <li>Repeat on 500 moving-block bootstrap samples (block length 6).</li>
+  <li>Keep candidates with selection frequency ≥ 0.60. Cap at the top 3 across all buckets.</li>
+</ol>
+
+<h3>7.3 Refit and test</h3>
+<div class="formula">r_t = α + Σ_k β_k·F_k,t + Σ_j γ_j·S̃_j,t + ε_t</div>
+<ul>
+  <li>OLS with Newey–West standard errors.</li>
+  <li>Joint HAC Wald test on all γ. If p ≥ 0.05, discard the drill-down and report "global only."</li>
+  <li>Because S̃ is orthogonal to the core, the β's should barely move from Stage 06. A change of more than 1 standard error indicates an orthogonalization problem.</li>
+</ul>
+
+<h3>7.4 Attribution and translation</h3>
+<p>The bucket's total contribution is <code>C_k + Σ_(j in k) C_j</code>, which reconciles with Stage 06. For the reader, convert tilts into effective regional exposures:</p>
+<div class="formula">Exposure_j ≈ β_k · w_j + γ_j      (w_j = region weight in the global index)</div>
+<p>Example: β<sub>EQ</sub> = 0.50, Japan weight 5%, γ<sub>Japan</sub> = 0.30 → effective Japan exposure ≈ 0.33. That is roughly a 13× overweight relative to a passive global allocation.</p>
+<div class="card-grid">
+  <div class="gate"><b>Output</b>Per fund: selected spreads, selection frequencies, γ with t-stats, joint Wald p-value, regional shares.</div>
+  <div class="gate"><b>Gate</b>No more than 3 Level 2 factors. The joint test passes, or the fund is reported as "global only."</div>
+</div>
+</section>
+
+<section id="s8">
+<h2><span class="n">08</span>Nonlinear extensions</h2>
+<span class="label">Purpose</span>
+<p>Capture option-like or asymmetric behaviour with at most one extra term per fund, keeping the model linear in parameters.</p>
+<span class="label">Detect first</span>
+<ul>
+  <li>Ramsey RESET test on the Stage 07 model (p &lt; 0.05 → investigate).</li>
+  <li>Plot residuals against the dominant factor and look for a U-shape or kink.</li>
+  <li>Compare residuals in the worst 10% of equity months with the rest.</li>
+</ul>
+<span class="label">Candidate terms (choose one)</span>
+<div class="tbl"><table>
+<tr><th>Pattern</th><th>Term</th><th>Typical strategy</th></tr>
+<tr><td>Asymmetric beta</td><td>β⁻ · min(F, 0) replacing the linear term (up/down split)</td><td>Equity L/S, event-driven</td></tr>
+<tr><td>Convexity</td><td>γ · F² (Treynor–Mazuy)</td><td>Macro, tail hedge</td></tr>
+<tr><td>Long optionality</td><td>Trend-following factor</td><td>CTA, macro</td></tr>
+<tr><td>Short volatility</td><td>ΔVIX (orthogonalized)</td><td>Merger arbitrage, relative value, vol selling</td></tr>
+<tr><td>Stress regime</td><td>δ · 1{stress_t} · F (stress = bottom decile of equity months)</td><td>Credit, multi-strategy</td></tr>
+</table></div>
+<div class="card-grid">
+  <div class="gate"><b>Gate</b>Keep the term only if its |t| ≥ 2 <b>and</b> out-of-sample R² improves in Stage 09.</div>
+</div>
+</section>
+
+<section id="s9">
+<h2><span class="n">09</span>Testing and validation</h2>
+<span class="label">Purpose</span>
+<p>Prove that the selected factors are real drivers rather than in-sample noise. Run all tests for every fund.</p>
+
+<h3>9.1 Walk-forward out-of-sample test (primary)</h3>
+<ol>
+  <li>Initial window: months 1 to 36. Expanding window, one-month step.</li>
+  <li>At each step t: re-estimate the orthogonalization coefficients, <b>re-run stability selection</b> (200 draws is enough here), and fit the model on months 1 to t.</li>
+  <li>Predict month t+1 using its realized factor returns. This is explanatory, not a forecast: it tests whether the betas hold on unseen months.</li>
+  <li>Benchmark: the historical mean of the fund's return up to t.</li>
+</ol>
+<div class="formula">R²_OOS = 1 − Σ(r − r̂_model)² / Σ(r − r̄_hist)²</div>
+<p>This yields about 24 out-of-sample months. Also report the out-of-sample tracking error (standard deviation of prediction errors, annualized) versus the in-sample residual volatility. A ratio above 1.5 signals overfitting.</p>
+
+<h3>9.2 Drop-one test</h3>
+<p>For each Level 2 or 3 factor, rerun 9.1 without it. The factor is confirmed only if the out-of-sample tracking error worsens when it is removed.</p>
+
+<h3>9.3 Circular-shift permutation test</h3>
+<p>For each selected factor, circularly shift its series by a random offset (preserving its autocorrelation), refit, and record the t-stat. Repeat 1,000 times. The real t-stat must exceed the 95th percentile of the shifted distribution.</p>
+
+<h3>9.4 Stability</h3>
+<ul>
+  <li><b>Split sample:</b> fit on the first 30 and last 30 months separately. The beta sign must match, and magnitudes should be within 2 standard errors of each other.</li>
+  <li><b>Stress months:</b> refit with a stress interaction. Report the stress beta separately.</li>
+  <li><b>Kalman beta:</b> random-walk betas with small state noise (Q pooled across the peer group). Flag drift when the filtered beta leaves its 90% band for 3 or more consecutive months.</li>
+</ul>
+
+<h3>9.5 Robustness</h3>
+<ul>
+  <li><b>Proxy swap:</b> replace each Level 1 index with its runner-up from the Stage 03 cluster (for example, ACWI replaced by MSCI World). Conclusions must hold.</li>
+  <li><b>Raw vs unsmoothed:</b> conclusions must hold in both runs, where applicable.</li>
+</ul>
+
+<h3>9.6 Multiple testing</h3>
+<p>Across the whole universe, apply Benjamini–Hochberg at a 10% false discovery rate to (a) all Level 2 and 3 factor p-values and (b) all α p-values. Report the FDR-adjusted q-values.</p>
+</section>
+
+<section id="s10">
+<h2><span class="n">10</span>Classification and reporting</h2>
+<h3>10.1 Classification of each factor per fund</h3>
+<div class="tbl"><table>
+<tr><th>Class</th><th>Criteria (all must hold)</th><th>Action</th></tr>
+<tr><td><span class="pill p-good">Driver</span></td><td>|t| ≥ 2, q ≤ 0.10, passes drop-one and permutation, split-sample sign stable, economically plausible</td><td>Report as an exposure</td></tr>
+<tr><td><span class="pill p-warn">Tentative</span></td><td>Significant in-sample but fails exactly one of drop-one, permutation or stability</td><td>Report with a flag; monitor the Kalman beta</td></tr>
+<tr><td><span class="pill p-bad">Spurious</span></td><td>Fails two or more tests, or has no economic rationale</td><td>Drop and log it</td></tr>
+</table></div>
+<p><b>Economic plausibility check:</b> the exposure must be consistent with the stated strategy, or explainable by the manager letter, risk report (e.g. Open Protocol) or holdings. An analyst writes one line of rationale for every Driver that is not obvious from the mandate.</p>
+
+<h3>10.2 Per-fund tearsheet</h3>
+<ol>
+  <li>Header: strategy, n months, smoothing flag, R² (in-sample and out-of-sample), α with q-value.</li>
+  <li>Level 1 table: β (shrunk), confidence interval, Shapley share, Euler share.</li>
+  <li>Level 2 table: selected spreads, γ, selection frequency, effective regional exposure, class.</li>
+  <li>Charts: stacked risk-share bar (Level 1 → Level 2), Kalman beta paths, actual vs out-of-sample replica returns.</li>
+  <li>Flags: drift, low confidence, style inconsistency with peers.</li>
+</ol>
+
+<h3>10.3 Universe views</h3>
+<ul>
+  <li>Heatmap of funds × factors (shrunk betas, masked where not a Driver).</li>
+  <li>Portfolio aggregation: allocation-weighted sum of betas → total portfolio exposure per factor. This reveals hidden concentration, such as several "diversified" funds all carrying Japan equity or HY credit.</li>
+  <li>Crowding: correlation of funds' residuals; clusters of high residual correlation indicate a shared unmodelled factor.</li>
+</ul>
+</section>
+
+<section id="s11">
+<h2><span class="n">11</span>Monthly production run</h2>
+<ol class="check">
+  <li>Load new month of fund and index data. Run Stage 01 checks.</li>
+  <li>Recompute factors using the frozen <code>factor_spec.yaml</code> (the spec changes quarterly, not monthly).</li>
+  <li>Run Stages 05 to 07 for all funds. Update Kalman betas.</li>
+  <li>Compare with last month: flag any β that moved by more than 2 standard errors, any new or dropped Driver, and any bucket share change above 10 points.</li>
+  <li>Run the full Stage 09 validation <b>quarterly</b> (it is compute-heavy). Monthly: Kalman drift check only.</li>
+  <li>Analyst reviews flags and writes rationale. Record overrides in <code>override_log.csv</code> with name, date and reason.</li>
+  <li>Archive inputs, config, code version (git hash) and outputs under <code>runs/YYYY-MM/</code> so any past result can be reproduced.</li>
+</ol>
+<span class="label">Quarterly</span>
+<ul>
+  <li>Re-run the Stage 03 funnel with any new indices. Sign off and freeze the new spec.</li>
+  <li>Review strategy bucket assignments against the Level 1 results (for example, a "market-neutral" fund with β<sub>EQ</sub> = 0.6).</li>
+</ul>
+<span class="label">Governance</span>
+<ul>
+  <li>Model documentation: purpose, assumptions, limitations, this manual.</li>
+  <li>Independent validation before first production use, and annually after (per SR 11-7 practice).</li>
+  <li>Known limitations: 60-month samples, linear-in-parameters form, index proxies may differ from true holdings, and results describe exposure, not causation.</li>
+</ul>
+</section>
+
+<section id="s12">
+<h2><span class="n">12</span>Code layout and snippets</h2>
+<h3>Repository structure</h3>
+<pre><code>fund-exposure/
+├── config/
+│   ├── factor_spec.yaml       # Stage 03 output, frozen quarterly
+│   └── params.yaml            # Stage 13 defaults
+├── data/        raw/ clean/   # Stage 01
+├── src/
+│   ├── prep.py                # cleaning, excess returns, unsmoothing
+│   ├── universe.py            # tagging, clustering funnel
+│   ├── factors.py             # spreads, orthogonalization
+│   ├── model_l1.py            # OLS, shrinkage, Euler, Shapley
+│   ├── model_l2.py            # stability selection, refit, Wald
+│   ├── validate.py            # walk-forward, drop-one, permutation
+│   ├── kalman.py              # time-varying betas
+│   └── report.py              # tearsheets, heatmaps
+├── runs/YYYY-MM/              # archived outputs
+└── override_log.csv</code></pre>
+
+<h3>Redundancy clustering (Stage 03)</h3>
+<pre><code>import numpy as np, pandas as pd
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import squareform
+
+def cluster_indices(rets: pd.DataFrame, rho_cut=0.90):
+    D = 1 - rets.corr().abs()
+    Z = linkage(squareform(D.values, checks=False), method="average")
+    return pd.Series(fcluster(Z, t=1 - rho_cut, criterion="distance"),
+                     index=rets.columns)  # same label = same cluster</code></pre>
+
+<h3>Orthogonalization (Stage 04)</h3>
+<pre><code>def resid(A, B):
+    """Residual of A (n,) or (n,m) on [1, B]."""
+    Z = np.column_stack([np.ones(len(B)), B])
+    coef, *_ = np.linalg.lstsq(Z, A, rcond=None)
+    return A - Z @ coef, coef</code></pre>
+
+<h3>Level 1 fit, Euler and Shapley (Stage 06)</h3>
+<pre><code>import statsmodels.api as sm
+from itertools import combinations
+from math import factorial
+
+def fit_hac(y, X, lags=3):
+    return sm.OLS(y, sm.add_constant(X)).fit(
+        cov_type="HAC", cov_kwds={"maxlags": lags})
+
+def euler_shares(y, X, beta):
+    S = np.cov(X, rowvar=False)
+    return beta * (S @ beta) / np.var(y, ddof=1)
+
+def shapley_r2(y, X):
+    k = X.shape[1]
+    r2 = {(): 0.0}
+    for m in range(1, k + 1):
+        for s in combinations(range(k), m):
+            r2[s] = sm.OLS(y, sm.add_constant(X[:, list(s)])).fit().rsquared
+    phi = np.zeros(k)
+    for j in range(k):
+        for s, v in r2.items():
+            if j in s:
+                continue
+            w = factorial(len(s)) * factorial(k - len(s) - 1) / factorial(k)
+            phi[j] += w * (r2[tuple(sorted(s + (j,)))] - v)
+    return phi  # sums to full-model R²</code></pre>
+
+<h3>Stability selection (Stage 07)</h3>
+<pre><code>from sklearn.linear_model import LassoLarsIC
+
+def block_boot_idx(n, block, rng):
+    starts = rng.integers(0, n - block + 1, size=int(np.ceil(n / block)))
+    return np.concatenate([np.arange(s, s + block) for s in starts])[:n]
+
+def stability_select(y, core, cand, n_boot=500, block=6, seed=0):
+    rng, n = np.random.default_rng(seed), len(y)
+    hits = np.zeros(cand.shape[1])
+    for _ in range(n_boot):
+        i = block_boot_idx(n, block, rng)
+        yr, _ = resid(y[i], core[i])          # partial out Level 1
+        Cr, _ = resid(cand[i], core[i])
+        sd = Cr.std(0); sd[sd == 0] = 1
+        m = LassoLarsIC(criterion="bic").fit(Cr / sd, yr)
+        hits += m.coef_ != 0
+    return hits / n_boot                      # keep freq >= 0.60</code></pre>
+
+<h3>Walk-forward validation (Stage 09)</h3>
+<pre><code>def walk_forward(y, core, cand, start=36, thresh=0.6):
+    pred, bench = [], []
+    for t in range(start, len(y)):
+        freq = stability_select(y[:t], core[:t], cand[:t], n_boot=200)
+        keep = np.argsort(-freq)[:3]
+        keep = keep[freq[keep] >= thresh]
+        X = np.column_stack([core, cand[:, keep]])
+        fit = sm.OLS(y[:t], sm.add_constant(X[:t])).fit()
+        pred.append(fit.params @ np.r_[1.0, X[t]])
+        bench.append(y[:t].mean())
+    yt, pred, bench = y[start:], np.array(pred), np.array(bench)
+    r2_oos = 1 - np.sum((yt - pred) ** 2) / np.sum((yt - bench) ** 2)
+    te_oos = np.std(yt - pred, ddof=1) * np.sqrt(12)
+    return r2_oos, te_oos</code></pre>
+<p>In production, the orthogonalization coefficients should also be re-estimated inside the loop using data up to t only.</p>
+
+<h3>Circular-shift permutation (Stage 09)</h3>
+<pre><code>def perm_test(y, X, col, n=1000, seed=0):
+    rng = np.random.default_rng(seed)
+    t_real = abs(fit_hac(y, X).tvalues[col + 1])
+    t_null = []
+    for _ in range(n):
+        Xp = X.copy()
+        Xp[:, col] = np.roll(X[:, col], rng.integers(6, len(y) - 6))
+        t_null.append(abs(fit_hac(y, Xp).tvalues[col + 1]))
+    return np.mean(np.array(t_null) >= t_real)   # empirical p-value</code></pre>
+</section>
+
+<section id="s13">
+<h2><span class="n">13</span>Default parameters</h2>
+<div class="tbl"><table>
+<tr><th>Parameter</th><th>Default</th><th>Stage</th></tr>
+<tr><td>Minimum fund months (full confidence)</td><td>48</td><td>01</td></tr>
+<tr><td>Outlier flag</td><td>|z| &gt; 4</td><td>01</td></tr>
+<tr><td>Index history for factor build</td><td>≥ 120 months</td><td>01, 03</td></tr>
+<tr><td>Redundancy cut</td><td>|ρ| &gt; 0.90</td><td>03</td></tr>
+<tr><td>Candidate pool (Level 2 + 3)</td><td>≤ 25</td><td>03</td></tr>
+<tr><td>Orthogonality tolerance</td><td>|ρ| &lt; 0.05</td><td>04</td></tr>
+<tr><td>VIF limit</td><td>5</td><td>04, 06</td></tr>
+<tr><td>Smoothing trigger</td><td>ρ₁ &gt; 0.20 and Ljung–Box p &lt; 0.05</td><td>05</td></tr>
+<tr><td>Newey–West lags</td><td>3</td><td>06–09</td></tr>
+<tr><td>Minimum peer group for shrinkage</td><td>8 funds</td><td>06</td></tr>
+<tr><td>Bootstrap block length / draws</td><td>6 / 1,000</td><td>06</td></tr>
+<tr><td>Drill-down trigger</td><td>Shapley share ≥ 10% and |t| ≥ 2</td><td>07</td></tr>
+<tr><td>Stability selection draws / threshold</td><td>500 / 0.60</td><td>07</td></tr>
+<tr><td>Max Level 2 factors per fund</td><td>3</td><td>07</td></tr>
+<tr><td>Max nonlinear terms per fund</td><td>1</td><td>08</td></tr>
+<tr><td>Walk-forward initial window</td><td>36 months</td><td>09</td></tr>
+<tr><td>Overfit warning (OOS TE / in-sample residual vol)</td><td>&gt; 1.5</td><td>09</td></tr>
+<tr><td>Permutation draws / level</td><td>1,000 / 95th percentile</td><td>09</td></tr>
+<tr><td>FDR level</td><td>10%</td><td>09</td></tr>
+<tr><td>Kalman drift flag</td><td>3 consecutive months outside 90% band</td><td>09</td></tr>
+<tr><td>Month-on-month beta change flag</td><td>&gt; 2 standard errors</td><td>11</td></tr>
+</table></div>
+<p style="color:var(--muted);font-size:.9rem;margin-top:1.4rem">All thresholds are defaults for about 60 monthly observations. Changes must be recorded in <code>params.yaml</code> with a dated rationale.</p>
+</section>
+</div>
+</body>
+</html>
