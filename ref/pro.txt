@@ -1,0 +1,35 @@
+Project 1: Document Intelligence for Risk Management
+
+Strategic objective. Build a governed capability that converts unstructured financial documents into validated, structured data, and uses that foundation to support deeper risk analysis across Risk Management. Parsing is the entry point; the longer-term objective is to give Risk Managers timely, consistent and analytically ready insight from documents that are currently reviewed manually or not systematically at all.
+
+Current state. The pipeline was initially developed for private equity filings and PE schedules, and has since been applied to BDC reports. It runs on approved in-house models, consistent with the confidentiality classification of private filings. Outputs are traceable to source documents, and automated reconciliation controls flag exceptions for review. The capability is currently delivered through a prototype interface and has not yet been through formal model governance.
+
+Proposed roadmap.
+
+	1.	Governance and production (near term): Complete a model classification assessment, register the capability in the model inventory with defined ownership, prepare documentation for IVU validation, and transition to a controlled production environment with IT.
+	2.	Broader coverage (medium term): Extend beyond private equity to additional asset classes, document types and user groups across Risk, establishing a common, validated data layer that can also serve existing initiatives, including CRate.
+	3.	Analytical insight (longer term): Build on the structured data to support higher-value analysis, such as look-through exposure aggregation, concentration and trend monitoring, early identification of deteriorating metrics, and comparison of reported information across funds and periods.
+
+Rationale. A validated internal capability provides a governed alternative to external tools for confidential documents, reduces manual effort, and creates a reusable data asset that strengthens the depth and consistency of risk oversight.
+
+Resource requirements. IVU validation capacity; IT support for production deployment; compute for expanded coverage; [one analyst] to support onboarding and exception review.
+
+Roles. Model Owner: [name]; Model Developer: [your name].
+
+Project 2: Hedge Fund Exposure and Return Analytics
+
+Strategic objective. Provide Risk Management with an independent, data-driven view of hedge fund counterparties' effective exposures and return drivers, particularly where position-level transparency is limited. The objective extends beyond prediction: to help Risk Managers understand what is actually driving a fund's performance, identify where it diverges from the stated strategy, and assess how the fund may behave under different market conditions.
+
+Current state. Models have been developed at two levels: counterparty-level fund returns and the monthly aggregate portfolio. Results are available through a prototype web interface, and validation is underway with Risk Managers using fund disclosures. Early results have already surfaced cases where estimated exposures differ from funds' reported strategies, illustrating the framework's potential value for oversight. The models have not yet been through formal model governance.
+
+Proposed roadmap.
+
+	1.	Governance and production (near term): Register the models in the model inventory with defined ownership, prepare documentation including out-of-sample testing and benchmarks for IVU validation, and transition to a controlled production environment.
+	2.	Methodology enhancement (medium term): Improve predictive accuracy; develop a framework to reconcile counterparty-level and portfolio-level views; and move from a fixed factor set to user-defined factors calculated on demand, so Risk Managers can test specific hypotheses and scenarios.
+	3.	Integrated risk insight (longer term): Combine return-based exposure estimates with holdings and risk data extracted through Project 1, giving Risk Managers both a holdings-based and a returns-based view of each fund. Divergence between the two views can serve as an early indicator of hedging, strategy drift or hidden concentration.
+
+Rationale. Independent estimates of effective exposure strengthen counterparty risk oversight, support more informed engagement with funds, and establish a governed internal standard for this analysis.
+
+Resource requirements. IVU validation capacity; IT support for scalable compute, market data feeds and a production interface supporting user-defined factors; continued access to risk-based fund disclosures through Risk Management.
+
+Roles. Model Owner: [name]; Model Developer: [your name].
